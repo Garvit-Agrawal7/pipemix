@@ -9,9 +9,9 @@ description = "Route audio to multiple output devices simultaneously on Linux"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
-dependencies = [
-    "dbus-python",
-]
+
+# Runtime needs pactl, and PyGObject (GTK4 + Gio for D-Bus) from the system packages.
+dependencies = ["dbus-python"]
 
 [project.scripts]
 pipemix = "pipemix.main:main"
