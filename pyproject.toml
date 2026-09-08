@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
 
 # Runtime needs pactl, and PyGObject (GTK4 + Gio for D-Bus) from the system packages.
-dependencies = ["dbus-python"]
+dependencies = []
 
 [project.scripts]
 pipemix = "pipemix.main:main"
