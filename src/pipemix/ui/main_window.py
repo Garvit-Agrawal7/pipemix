@@ -149,6 +149,13 @@ scale slider:hover {
     background-color: #89b4fa;
 }
 
+switch:checked {
+    background-color: #89b4fa;
+}
+switch:checked > slider {
+    background-color: #eff1f5;
+}
+
 /* Presets panel styling */
 .presets-panel {
     background-color: #181825;
@@ -465,7 +472,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._preset_handler = self.preset_combo.connect("changed", self._on_preset_changed)
         preset_box.append(self.preset_combo)
 
-        self.btn_save = Gtk.Button(label="Save")
+        self.btn_save = Gtk.Button(label="Add Preset")
         self.btn_save.set_tooltip_text("Save current selection as preset")
         self.btn_save.connect("clicked", self._on_save_preset)
         preset_box.append(self.btn_save)
