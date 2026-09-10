@@ -13,7 +13,7 @@ class ConfigManager:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or Path.home() / ".config" / "pipemix" / "config.json"
-        self.data: dict = {"devices": {}, "presets": {}}
+        self.data: dict = {"devices": {}, "presets": {}, "last_preset": None}
         self.load()
 
     def load(self) -> None:
@@ -30,7 +30,11 @@ class ConfigManager:
         except Exception as e:
             log.error("Failed to load config: %s. Using empty default.", e)
 
-        self.data = {"devices": raw.get("devices", {}), "presets": raw.get("presets", {})}
+        self.data = {
+            "devices": raw.get("devices", {}),
+            "presets": raw.get("presets", {}),
+            "last_preset": raw.get("last_preset"),
+        }
 
     def save(self) -> None:
         try:

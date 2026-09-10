@@ -530,7 +530,7 @@ class MainWindow(Gtk.ApplicationWindow):
         page_box.append(btn_box)
         self.stack.add_named(page_box, "combine")
 
-        self._refresh_presets()
+        self._refresh_presets(select_id=self.controller.last_preset)
 
     # ---------- Split Audio page ----------
 
@@ -720,6 +720,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         wanted = preset.get("devices", [])
         log.info("Loading preset '%s': %s", preset.get("name"), wanted)
+        self.controller.last_preset = combo.get_active_id()
         for dev_id in self.selected:
             self.selected[dev_id] = dev_id in wanted
 
@@ -783,6 +784,8 @@ class MainWindow(Gtk.ApplicationWindow):
             return
 
         self.controller.delete_preset(preset_id)
+        if self.controller.last_preset == preset_id:
+            self.controller.last_preset = None
         self._refresh_presets()
 
     def _refresh_presets(self, select_id: str | None = None) -> None:
@@ -811,6 +814,9 @@ class MainWindow(Gtk.ApplicationWindow):
     # ---------- Controller signals ----------
 
     def _on_devices(self, controller: Controller, devices: list[AudioDevice]) -> None:
+        preset = self.controller.presets.get(self.preset_combo.get_active_id() or "none", {})
+        wanted = preset.get("devices", [])
+
         while row := self.device_list.get_row_at_index(0):
             self.device_list.remove(row)
 
@@ -818,7 +824,7 @@ class MainWindow(Gtk.ApplicationWindow):
             # An offline device cannot be shared to, so it cannot stay ticked.
             if not dev.connected:
                 self.selected[dev.id] = False
-            self.selected.setdefault(dev.id, False)
+            self.selected.setdefault(dev.id, dev.id in wanted)
 
             row = DeviceRow(dev, self._on_device_toggle, self._on_device_volume)
             row.set_active(self.selected[dev.id])
