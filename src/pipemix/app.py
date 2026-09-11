@@ -5,7 +5,7 @@ import logging
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Gio', '2.0')
-from gi.repository import Gtk, Gio
+from gi.repository import GLib, Gtk, Gio
 
 from pipemix.controller import Controller
 from pipemix.services.backend.pactl_backend import PactlBackend
@@ -28,9 +28,11 @@ class PipeMixApp(Gtk.Application):
     def do_activate(self) -> None:
         log.info("Starting PipeMix GUI...")
         self.controller = Controller(PactlBackend(), ConfigManager())
-        self.controller.start()
         self.window = MainWindow(self, self.controller)
         self.window.present()
+        # After the window is up: start() blocks on pactl/BlueZ, and its
+        # devices-changed emit needs a listener already connected.
+        GLib.idle_add(self.controller.start)
 
     def do_shutdown(self) -> None:
         """Tear down audio routing before the process goes away."""

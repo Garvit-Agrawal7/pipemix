@@ -182,6 +182,15 @@ class Controller(GObject.Object):
     def presets(self) -> dict:
         return self.config.data["presets"]
 
+    @property
+    def last_preset(self) -> str | None:
+        return self.config.data["last_preset"]
+
+    @last_preset.setter
+    def last_preset(self, preset_id: str | None) -> None:
+        self.config.data["last_preset"] = preset_id
+        self.config.save()
+
     def save_preset(self, name: str, devices: list[str]) -> str:
         preset_id = re.sub(r"[^a-z0-9_]", "", name.lower().replace(" ", "_"))
         if not preset_id:

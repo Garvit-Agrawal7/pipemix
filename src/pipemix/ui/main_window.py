@@ -149,6 +149,13 @@ scale slider:hover {
     background-color: #89b4fa;
 }
 
+switch:checked {
+    background-color: #89b4fa;
+}
+switch:checked > slider {
+    background-color: #eff1f5;
+}
+
 /* Presets panel styling */
 .presets-panel {
     background-color: #181825;
@@ -465,7 +472,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._preset_handler = self.preset_combo.connect("changed", self._on_preset_changed)
         preset_box.append(self.preset_combo)
 
-        self.btn_save = Gtk.Button(label="Save")
+        self.btn_save = Gtk.Button(label="Add Preset")
         self.btn_save.set_tooltip_text("Save current selection as preset")
         self.btn_save.connect("clicked", self._on_save_preset)
         preset_box.append(self.btn_save)
@@ -530,7 +537,7 @@ class MainWindow(Gtk.ApplicationWindow):
         page_box.append(btn_box)
         self.stack.add_named(page_box, "combine")
 
-        self._refresh_presets()
+        self._refresh_presets(select_id=self.controller.last_preset)
 
     # ---------- Split Audio page ----------
 
@@ -695,9 +702,23 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_device_toggle(self, device: AudioDevice, active: bool) -> None:
         self.selected[device.id] = active
+        self._clear_preset()
         # A live session follows the ticks immediately.
         if self.controller.session.is_active:
             self._apply_selection()
+
+    def _clear_preset(self) -> None:
+        """A hand-toggled device no longer matches the preset, so show the placeholder."""
+        if (self.preset_combo.get_active_id() or "none") == "none":
+            return
+
+        self.preset_combo.handler_block(self._preset_handler)
+        try:
+            self.preset_combo.set_active_id("none")
+        finally:
+            self.preset_combo.handler_unblock(self._preset_handler)
+
+        self.controller.last_preset = None
 
     def _on_share(self, button: Gtk.Button) -> None:
         if self.controller.session.is_active:
@@ -720,6 +741,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         wanted = preset.get("devices", [])
         log.info("Loading preset '%s': %s", preset.get("name"), wanted)
+        self.controller.last_preset = combo.get_active_id()
         for dev_id in self.selected:
             self.selected[dev_id] = dev_id in wanted
 
@@ -783,6 +805,8 @@ class MainWindow(Gtk.ApplicationWindow):
             return
 
         self.controller.delete_preset(preset_id)
+        if self.controller.last_preset == preset_id:
+            self.controller.last_preset = None
         self._refresh_presets()
 
     def _refresh_presets(self, select_id: str | None = None) -> None:
@@ -790,7 +814,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.preset_combo.handler_block(self._preset_handler)
         try:
             self.preset_combo.remove_all()
-            self.preset_combo.append("none", "-- Select Preset --")
+            self.preset_combo.append("none", "Select Preset..")
             presets = self.controller.presets
             for pid, preset in presets.items():
                 self.preset_combo.append(pid, preset.get("name", pid))
@@ -811,6 +835,9 @@ class MainWindow(Gtk.ApplicationWindow):
     # ---------- Controller signals ----------
 
     def _on_devices(self, controller: Controller, devices: list[AudioDevice]) -> None:
+        preset = self.controller.presets.get(self.preset_combo.get_active_id() or "none", {})
+        wanted = preset.get("devices", [])
+
         while row := self.device_list.get_row_at_index(0):
             self.device_list.remove(row)
 
@@ -818,7 +845,7 @@ class MainWindow(Gtk.ApplicationWindow):
             # An offline device cannot be shared to, so it cannot stay ticked.
             if not dev.connected:
                 self.selected[dev.id] = False
-            self.selected.setdefault(dev.id, False)
+            self.selected.setdefault(dev.id, dev.id in wanted)
 
             row = DeviceRow(dev, self._on_device_toggle, self._on_device_volume)
             row.set_active(self.selected[dev.id])

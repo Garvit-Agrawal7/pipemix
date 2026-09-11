@@ -95,11 +95,14 @@ def test_config_roundtrip(tmp_path: Path) -> None:
     cfg = ConfigManager(path)
     cfg.data["devices"]["61:C5:02:3A:59:49"] = 'Boat "Airdopes"'
     cfg.save_preset("movie_mode", "Movie Mode", ["61:C5:02:3A:59:49"])
+    cfg.data["last_preset"] = "movie_mode"
     cfg.save()
 
     reloaded = ConfigManager(path)
     assert reloaded.data["devices"]["61:C5:02:3A:59:49"] == 'Boat "Airdopes"'
     assert reloaded.data["presets"]["movie_mode"]["devices"] == ["61:C5:02:3A:59:49"]
+
+    assert reloaded.data["last_preset"] == "movie_mode"
 
     reloaded.delete_preset("movie_mode")
     reloaded.delete_preset("never_existed")  # must not raise
@@ -117,7 +120,7 @@ def test_legacy_toml(tmp_path: Path) -> None:
 
 
 def test_missing_config(tmp_path: Path) -> None:
-    assert ConfigManager(tmp_path / "nope.json").data == {"devices": {}, "presets": {}}
+    assert ConfigManager(tmp_path / "nope.json").data == {"devices": {}, "presets": {}, "last_preset": None}
 
 
 if __name__ == "__main__":
