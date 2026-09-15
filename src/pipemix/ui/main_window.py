@@ -321,6 +321,12 @@ switch:checked > slider {
     background-color: #45475a;
 }
 
+.split-empty-msg {
+    font-size: 1.05em;
+    color: #6c7086;
+    font-weight: 500;
+}
+
 /* Shutdown Button Styles (subtext color on idle, red only on hover) */
 .btn-shutdown {
     color: #a6adc8;
@@ -561,6 +567,7 @@ class MainWindow(Gtk.ApplicationWindow):
         scroll.add_css_class("device-list-frame")
 
         self.stream_list = Gtk.ListBox()
+        self.stream_list.add_css_class("device-list")
         self.stream_list.set_selection_mode(Gtk.SelectionMode.NONE)
         scroll.set_child(self.stream_list)
         page_box.append(scroll)
@@ -641,10 +648,11 @@ class MainWindow(Gtk.ApplicationWindow):
         row_box.set_margin_bottom(48)
         row_box.set_halign(Gtk.Align.CENTER)
 
-        icon = Gtk.Image.new_from_icon_name("dialog-information")
+        icon = Gtk.Image.new_from_icon_name("audio-volume-muted-symbolic")
         icon.set_pixel_size(48)
+        icon.set_opacity(0.4)
         label = Gtk.Label(label=message)
-        label.add_css_class("text-muted")
+        label.add_css_class("split-empty-msg")
 
         row_box.append(icon)
         row_box.append(label)
