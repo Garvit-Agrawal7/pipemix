@@ -499,7 +499,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.status_box.add_css_class("status-panel")
         self.status_box.add_css_class("status-idle")
-        self.status_label = Gtk.Label(label="Idle — Ready to share")
+        self.status_label = Gtk.Label(label="Idle - Ready to share")
         self.status_box.append(self.status_label)
         page_box.append(self.status_box)
 
@@ -889,16 +889,16 @@ class MainWindow(Gtk.ApplicationWindow):
 
         if state == SessionState.ACTIVE:
             self.status_box.add_css_class("status-active")
-            self.status_label.set_text("Sharing Active ✓ — Playing on multiple outputs")
+            self.status_label.set_text("Sharing Active")
         elif state == SessionState.REPAIRING or state == SessionState.STARTING:
             self.status_box.add_css_class("status-repairing")
             self.status_label.set_text("Reconnecting... Waiting for output device(s)")
         elif state == SessionState.ERROR:
             self.status_box.add_css_class("status-error")
-            self.status_label.set_text("Error — Reset Audio recommended")
+            self.status_label.set_text("Error, click reset audio to try again")
         else:
             self.status_box.add_css_class("status-idle")
-            self.status_label.set_text("Idle — Ready to share")
+            self.status_label.set_text("Idle, start sharing to begin")
 
     # ---------- Dialogs ----------
 
