@@ -17,6 +17,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -664,16 +665,25 @@ class MainWindow(QMainWindow):
             )
 
     def _build_stream_row(self, stream: dict, devices: list[AudioDevice]) -> QFrame:
-        """One application stream: name, target-output dropdown, mute toggle."""
+        """
+        One application stream row:
+          - Icon + name + stream ID
+          - Per-device checkboxes (one per connected output)
+          - "All" button to tick every device at once
+        """
         frame = QFrame()
         frame.setObjectName("appRow")
-        row = QHBoxLayout(frame)
-        row.setContentsMargins(12, 10, 12, 10)
-        row.setSpacing(16)
+        outer = QVBoxLayout(frame)
+        outer.setContentsMargins(12, 10, 12, 10)
+        outer.setSpacing(8)
+
+        # ── Top: icon + stream name + id ──────────────────────────────────
+        top = QHBoxLayout()
+        top.setSpacing(12)
 
         icon_lbl = QLabel()
         icon_lbl.setPixmap(QIcon.fromTheme("audio-speakers").pixmap(28, 28))
-        row.addWidget(icon_lbl)
+        top.addWidget(icon_lbl)
 
         text_col = QVBoxLayout()
         text_col.setSpacing(2)
@@ -683,22 +693,9 @@ class MainWindow(QMainWindow):
         id_lbl.setObjectName("appStreamId")
         text_col.addWidget(name_lbl)
         text_col.addWidget(id_lbl)
-        row.addLayout(text_col, stretch=1)
+        top.addLayout(text_col, stretch=1)
 
-        dropdown = QComboBox()
-        for dev in devices:
-            dropdown.addItem(dev.name, userData=dev.sink)
-        current_idx = next(
-            (i for i in range(dropdown.count()) if dropdown.itemData(i) == stream["sink"]),
-            -1,
-        )
-        if current_idx >= 0:
-            dropdown.setCurrentIndex(current_idx)
-        dropdown.currentIndexChanged.connect(
-            lambda _idx, sid=stream["id"], cb=dropdown: self._on_route(cb, sid)
-        )
-        row.addWidget(dropdown)
-
+        # Mute button (top-right)
         mute_btn = QPushButton()
         mute_btn.setCheckable(True)
         mute_btn.setChecked(stream["mute"])
@@ -706,9 +703,61 @@ class MainWindow(QMainWindow):
             QIcon.fromTheme("audio-volume-muted" if stream["mute"] else "audio-volume-high")
         )
         mute_btn.setToolTip("Toggle mute")
-        mute_btn.setObjectName("btnReset")   # reuse the neutral button style
-        mute_btn.toggled.connect(lambda muted, sid=stream["id"], btn=mute_btn: self._on_mute(muted, sid, btn))
-        row.addWidget(mute_btn)
+        mute_btn.setObjectName("btnReset")
+        mute_btn.toggled.connect(
+            lambda muted, sid=stream["id"], btn=mute_btn: self._on_mute(muted, sid, btn)
+        )
+        top.addWidget(mute_btn)
+        outer.addLayout(top)
+
+        # ── Bottom: per-device checkboxes + All button ────────────────────
+        dev_row = QHBoxLayout()
+        dev_row.setSpacing(10)
+        dev_row.setContentsMargins(40, 0, 0, 0)  # indent under stream name
+
+        checkboxes: list[tuple[QCheckBox, AudioDevice]] = []
+
+        def _apply_selection():
+            """Collect checked devices and route the stream."""
+            checked = [dev for cb, dev in checkboxes if cb.isChecked()]
+            try:
+                self.adapter.route_stream_to_many(stream["id"], checked)
+            except Exception as e:
+                log.error("Failed to route stream %d: %s", stream["id"], e)
+
+        def _on_all_clicked():
+            """Check all device boxes, then route."""
+            for cb, _ in checkboxes:
+                cb.blockSignals(True)
+                cb.setChecked(True)
+                cb.blockSignals(False)
+            _apply_selection()
+
+        for dev in devices:
+            cb = QCheckBox(dev.name)
+            cb.setStyleSheet("color: #cdd6f4; font-size: 12px;")
+            # Pre-select the device if the stream is already routed to its sink
+            if stream.get("sink") == dev.sink:
+                cb.setChecked(True)
+            cb.stateChanged.connect(lambda _state, _fn=_apply_selection: _fn())
+            checkboxes.append((cb, dev))
+            dev_row.addWidget(cb)
+
+        if devices:
+            all_btn = QPushButton("All")
+            all_btn.setObjectName("btnSavePreset")
+            all_btn.setToolTip("Route to all connected outputs")
+            all_btn.setFixedWidth(48)
+            all_btn.clicked.connect(_on_all_clicked)
+            dev_row.addWidget(all_btn)
+
+        dev_row.addStretch()
+        outer.addLayout(dev_row)
+
+        if not devices:
+            no_dev = QLabel("No connected outputs available")
+            no_dev.setStyleSheet("color: #a6adc8; font-size: 11px;")
+            outer.addWidget(no_dev)
 
         return frame
 
@@ -731,15 +780,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             log.error("Failed to mute stream %d: %s", stream_id, e)
 
-    def _on_route(self, combo: QComboBox, stream_id: int) -> None:
-        sink = combo.currentData()
-        if not sink:
-            return
-        log.info("UI action: route stream %d to %s", stream_id, sink)
-        try:
-            self.adapter.route_stream(stream_id, sink)
-        except Exception as e:
-            log.error("Failed to route stream %d: %s", stream_id, e)
 
     def _on_device_toggle(self, device: AudioDevice, active: bool) -> None:
         self.selected[device.id] = active

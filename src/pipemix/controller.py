@@ -54,6 +54,10 @@ class Controller(GObject.Object):
         # Streams the user routed by hand, so a rebuild does not drag them back.
         self.overrides: dict[int, str] = {}
 
+        # Combined sinks created for per-stream multi-device routing.
+        # Keyed by stream_id; must be destroyed when the stream changes or resets.
+        self._stream_sinks: dict[int, VirtualSink] = {}
+
         self.master_volume = 50
 
     # ---------- Startup / shutdown ----------
@@ -264,9 +268,69 @@ class Controller(GObject.Object):
         return sink
 
     def route_stream(self, stream_id: int, target: str) -> None:
+        self._destroy_stream_sink(stream_id)
         self.backend.move_stream(stream_id, target)
         self.overrides[stream_id] = target
         log.info("Manual route: stream %d → %s", stream_id, target)
+
+    def route_stream_to_many(self, stream_id: int, devices: list[AudioDevice]) -> None:
+        """
+        Route one stream to multiple output devices simultaneously.
+
+        - 0 devices: no-op.
+        - 1 device:  simple single-sink route (no virtual sink created).
+        - 2+ devices: create a per-stream combined virtual sink and route to it.
+
+        If a Combine Sinks session is already active and its sink covers all
+        requested devices, we reuse that sink instead of creating a duplicate.
+        """
+        if not devices:
+            return
+
+        # Destroy any previous combined sink for this stream before routing.
+        self._destroy_stream_sink(stream_id)
+
+        if len(devices) == 1:
+            self.route_stream(stream_id, devices[0].sink)
+            return
+
+        # Reuse the active session combined sink if it already covers every
+        # requested device — avoids double-combining and extra PipeWire modules.
+        if self.session.is_active and self.session.sink:
+            session_ids = {d.id for d in self.session.devices}
+            wanted_ids  = {d.id for d in devices}
+            if wanted_ids <= session_ids:
+                target = self.session.sink.name
+                self.backend.move_stream(stream_id, target)
+                self.overrides[stream_id] = target
+                log.info("Multi-route stream %d → existing session sink %s", stream_id, target)
+                return
+
+        # Create a dedicated per-stream combined sink.
+        try:
+            sink = self.backend.create_sink(devices)
+            self._stream_sinks[stream_id] = sink
+            self.backend.move_stream(stream_id, sink.name)
+            self.overrides[stream_id] = sink.name
+            log.info("Multi-route stream %d → new combined sink %s", stream_id, sink.name)
+        except Exception as e:
+            log.error("Failed to create combined sink for stream %d: %s", stream_id, e)
+            raise
+
+    def _destroy_stream_sink(self, stream_id: int) -> None:
+        """Destroy the per-stream combined sink for stream_id if one exists."""
+        sink = self._stream_sinks.pop(stream_id, None)
+        if sink:
+            try:
+                self.backend.destroy_sink(sink)
+                log.info("Destroyed per-stream combined sink for stream %d: %s", stream_id, sink.name)
+            except Exception as e:
+                log.warning("Failed to destroy stream sink %s: %s", sink.name, e)
+
+    def _destroy_all_stream_sinks(self) -> None:
+        """Destroy all per-stream combined sinks (called on reset/stop)."""
+        for stream_id in list(self._stream_sinks):
+            self._destroy_stream_sink(stream_id)
 
     def stop_sharing(self) -> None:
         self._set_state(SessionState.STOPPING)
@@ -284,6 +348,7 @@ class Controller(GObject.Object):
             self.session.devices = []
             self.targets.clear()
             self.overrides.clear()
+            self._destroy_all_stream_sinks()
             self._set_state(SessionState.IDLE)
         except Exception as e:
             log.error("Error while stopping session: %s", e)
@@ -308,6 +373,7 @@ class Controller(GObject.Object):
             self.session = SharingSession()
             self.targets.clear()
             self.overrides.clear()
+            self._destroy_all_stream_sinks()
             self._set_state(SessionState.IDLE)
         except Exception as e:
             log.error("Reset Audio failed: %s", e)
