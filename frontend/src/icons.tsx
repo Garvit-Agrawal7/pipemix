@@ -169,3 +169,11 @@ export function kindIcon(kind: DeviceKind) {
     default:          return IconSpeaker;
   }
 }
+
+export const IconMenu = ({ size = 21 }: P) => (
+  <svg width={size} height={size} {...base} strokeWidth={1.9}>
+    <path d="M4 7h16" />
+    <path d="M4 12h16" />
+    <path d="M4 17h16" />
+  </svg>
+);
