@@ -118,3 +118,6 @@ select.selbox option{background:#161D20;color:#CFD9DE}
 .btn.sec[aria-expanded="true"] svg{transform:rotate(180deg)}
 .btn.sec svg{transition:transform 120ms ease}
 .btn.sec:disabled,.btn.pri:disabled{opacity:.5}
+
+/* A long preset name must not squeeze the primary action out of the row. */
+.ptext{max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
