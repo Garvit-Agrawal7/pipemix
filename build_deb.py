@@ -37,7 +37,7 @@ def main():
 Version: 1.0.0
 Architecture: all
 Maintainer: Gaurav <gaurav@mint-pc>
-Depends: python3, python3-gi, gir1.2-gtk-4.0, pulseaudio-utils
+Depends: python3, python3-gi, gir1.2-gtk-4.0, gir1.2-glib-2.0, pulseaudio-utils, python3-pyqt6
 Description: Dual Bluetooth Audio Manager
  Route application streams and combine outputs using PipeWire.
 """

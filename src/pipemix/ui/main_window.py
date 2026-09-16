@@ -1,12 +1,12 @@
 """
-PipeMix — MainWindow
+PipeMix — MainWindow (PyQt6)
 
-The main desktop user interface. Built purely in GTK4.
-Follows the "dumb UI" principle:
-  - Only displays state pushed from the Controller via signals.
-  - Sends user actions (button clicks, toggle switch states) to the Controller.
+Follows the same "dumb UI" principle as the GTK version:
+  - Only displays state pushed from the ControllerAdapter via Qt signals.
+  - Sends user actions to the Controller via the adapter's proxy methods.
   - Contains no business logic, no subprocess calls, no direct audio controls.
-  - Uses CSS for a premium, dark-mode, custom Libadwaita-like aesthetic.
+  - Uses QSS (Qt Style Sheets) for a consistent dark-mode aesthetic that is
+    identical on every desktop environment (forced Fusion style in app.py).
 """
 
 from __future__ import annotations
@@ -14,902 +14,942 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from gi.repository import Gdk, Gtk, GLib
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFrame,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from pipemix.models import AudioDevice, SessionState
+from pipemix.ui.controller_adapter import ControllerAdapter
 from pipemix.ui.device_row import DeviceRow
-from pipemix.services.backend import BackendHealth
+from pipemix.services.backend import BackendHealth, BackendStatus
 
 log = logging.getLogger(__name__)
 
-CSS_STYLES = """
-window {
+# ── Catppuccin Mocha palette (same as the GTK version) ────────────────────────
+QSS = """
+QMainWindow, QWidget#root {
     background-color: #1e1e2e;
     color: #cdd6f4;
-    font-family: 'Outfit', 'Inter', sans-serif;
+    font-family: 'Outfit', 'Inter', 'Segoe UI', sans-serif;
+    font-size: 13px;
 }
 
-headerbar {
-    background-color: #181825;
-    color: #cdd6f4;
-    border-bottom: 1px solid #313244;
-    padding: 6px;
-}
-
-.sidebar {
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+QListWidget#sidebar {
     background-color: #181825;
     border-right: 1px solid #313244;
+    border-top: none;
+    border-bottom: none;
+    border-left: none;
+    outline: none;
     padding-top: 12px;
 }
-
-.sidebar-row {
+QListWidget#sidebar::item {
+    color: #a6adc8;
+    font-weight: 600;
     padding: 12px 18px;
     border-radius: 12px;
     margin: 4px 12px;
-    color: #a6adc8;
-    font-weight: 600;
-    transition: all 0.2s ease;
 }
-
-.sidebar-row:hover {
+QListWidget#sidebar::item:hover {
     background-color: #313244;
     color: #cdd6f4;
 }
-
-.sidebar-row:selected {
+QListWidget#sidebar::item:selected {
     background-color: #313244;
     color: #89b4fa;
-    font-weight: 700;
 }
 
-.main-content {
-    padding: 24px;
+/* ── Content area ─────────────────────────────────────────────────────────── */
+QWidget#contentArea {
+    background-color: #1e1e2e;
+    padding: 0px;
+}
+QScrollArea {
+    border: none;
+    background-color: transparent;
+}
+QScrollArea > QWidget > QWidget {
+    background-color: transparent;
 }
 
-.tab-title {
-    font-size: 1.8em;
+/* ── Tab title / subtitle ─────────────────────────────────────────────────── */
+QLabel#tabTitle {
+    font-size: 22px;
     font-weight: 800;
     color: #cdd6f4;
-    margin-bottom: 4px;
 }
-
-.tab-subtitle {
-    font-size: 0.95em;
+QLabel#tabSubtitle {
+    font-size: 12px;
     color: #a6adc8;
-    margin-bottom: 24px;
+    margin-bottom: 12px;
 }
 
-.device-list-frame {
-    background-color: transparent;
-    border: none;
-}
-
-.device-list {
-    background-color: transparent;
-}
-
-/* Floating Card style for Device Rows */
-.device-row {
+/* ── Device row card ──────────────────────────────────────────────────────── */
+QFrame#deviceRow {
     background-color: #181825;
     border: 1px solid #313244;
     border-radius: 16px;
     margin: 0px 4px 12px 4px;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
-    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
-
-.device-row:hover {
+QFrame#deviceRow:hover {
     background-color: #252636;
     border-color: #45475a;
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
 }
-
-.device-row-title {
+QFrame#deviceRow[offline="true"] {
+    opacity: 0.45;
+}
+QLabel#deviceName {
     font-weight: 600;
-    font-size: 1.1em;
+    font-size: 14px;
     color: #cdd6f4;
 }
-
-.device-row-subtitle {
-    font-size: 0.85em;
+QLabel#deviceSubtitle {
+    font-size: 11px;
     color: #bac2de;
 }
-
-.device-row-battery {
-    font-size: 0.9em;
+QLabel#deviceBattery {
+    font-size: 11px;
     font-weight: bold;
     color: #a6e3a1;
 }
 
-.device-row-offline {
-    opacity: 0.45;
+/* ── Toggle (QCheckBox styled as a switch-like button) ───────────────────── */
+QCheckBox#deviceToggle {
+    spacing: 0px;
 }
-
-/* Audio Volume Scale customized to Royal Blue */
-scale trough {
-    background-color: #313244;
-    border-radius: 8px;
-    min-height: 8px;
-}
-scale highlight {
-    background-color: #89b4fa;
-    border-radius: 8px;
-}
-scale slider {
-    background-color: #cdd6f4;
-    border: 1px solid #11111b;
-    border-radius: 50%;
-    min-width: 14px;
-    min-height: 14px;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
-    margin: -3px 0;
-    transition: background-color 0.2s;
-}
-scale slider:hover {
-    background-color: #89b4fa;
-}
-
-switch:checked {
-    background-color: #89b4fa;
-}
-switch:checked > slider {
-    background-color: #eff1f5;
-}
-
-/* Presets panel styling */
-.presets-panel {
-    background-color: #181825;
-    border: 1px solid #313244;
-    border-radius: 16px;
-    padding: 14px 16px;
-    margin-bottom: 20px;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
-}
-
-.presets-panel button {
-    padding: 6px 16px;
-    border-radius: 10px;
-    font-weight: 600;
-}
-
-/* Share Button with Solid Accent Orange/Peach */
-.btn-share {
-    background-color: #fab387;
-    color: #11111b;
+QCheckBox#deviceToggle::indicator {
+    width: 38px;
+    height: 22px;
+    border-radius: 11px;
+    background-color: #45475a;
     border: none;
-    border-radius: 14px;
-    font-weight: 700;
-    font-size: 1.1em;
-    padding: 14px;
-    margin-top: 16px;
-    box-shadow: none;
-    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
-
-.btn-share:hover {
-    background-color: #f9e2af;
-    box-shadow: none;
-    transform: translateY(-1px);
-}
-
-.btn-share:active {
-    background-color: #fab387;
-    transform: translateY(0);
-}
-
-/* Active Sharing Button - Royal Blue (No Red bleeding) */
-.btn-share.active {
+QCheckBox#deviceToggle::indicator:checked {
     background-color: #89b4fa;
-    color: #11111b;
-    box-shadow: none;
 }
-
-.btn-share.active:hover {
-    background-color: #b4befe;
-    box-shadow: none;
-    transform: translateY(-1px);
-}
-
-.btn-share.active:active {
-    background-color: #89b4fa;
-    transform: translateY(0);
-}
-
-.btn-reset {
+QCheckBox#deviceToggle::indicator:disabled {
     background-color: #313244;
-    color: #cdd6f4;
-    border: 1px solid #45475a;
-    border-radius: 14px;
-    padding: 14px;
-    margin-top: 16px;
-    font-weight: 600;
-    transition: all 0.2s ease;
 }
 
-.btn-reset:hover {
+/* ── Volume slider ────────────────────────────────────────────────────────── */
+QSlider::groove:horizontal {
+    height: 6px;
+    background-color: #313244;
+    border-radius: 3px;
+}
+QSlider::sub-page:horizontal {
+    background-color: #89b4fa;
+    border-radius: 3px;
+}
+QSlider::handle:horizontal {
+    width: 14px;
+    height: 14px;
+    background-color: #cdd6f4;
+    border-radius: 7px;
+    margin: -4px 0;
+    border: 1px solid #11111b;
+}
+QSlider::handle:horizontal:hover {
+    background-color: #89b4fa;
+}
+QSlider::handle:horizontal:disabled {
     background-color: #45475a;
 }
 
-/* Delete Preset Button with custom Red hover highlight only */
-.btn-delete {
-    background-color: #313244;
-    color: #cdd6f4;
-    border: 1px solid #45475a;
-    border-radius: 10px;
-    transition: all 0.2s ease;
-}
-
-.btn-delete:hover {
-    background-color: rgba(212, 125, 133, 0.08);
-    color: #d47d85;
-    border-color: #d47d85;
-}
-
-.status-panel {
-    border-radius: 24px;
-    padding: 10px 18px;
-    font-weight: 700;
-    margin-top: 16px;
-    letter-spacing: 0.2px;
-}
-
-.status-idle {
-    background-color: rgba(69, 71, 90, 0.2);
-    color: #bac2de;
-}
-
-.status-active {
-    background-color: rgba(137, 180, 250, 0.15);
-    color: #89b4fa;
-    border: 1px solid rgba(137, 180, 250, 0.3);
-}
-
-.status-repairing {
-    background-color: rgba(249, 226, 175, 0.15);
-    color: #f9e2af;
-    border: 1px solid rgba(249, 226, 175, 0.3);
-}
-
-.status-error {
-    background-color: rgba(212, 125, 133, 0.08);
-    color: #d47d85;
-    border: 1px solid rgba(212, 125, 133, 0.15);
-}
-
-/* Split Routing Tab Styles */
-.app-row {
+/* ── Presets panel ────────────────────────────────────────────────────────── */
+QFrame#presetsPanel {
     background-color: #181825;
     border: 1px solid #313244;
     border-radius: 16px;
-    margin: 0px 4px 12px 4px;
-    padding: 16px;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
-    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    padding: 8px;
+    margin-bottom: 12px;
 }
-
-.app-row:last-child {
-    border-bottom: none;
-}
-
-.app-row:hover {
-    background-color: #252636;
-    border-color: #45475a;
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
-}
-
-.app-name {
-    font-weight: bold;
-    font-size: 1.05em;
+QLabel#presetsLabel {
+    font-weight: 600;
     color: #cdd6f4;
 }
-
-.app-stream-id {
-    font-size: 0.8em;
-    color: #a6adc8;
-}
-
-.device-dropdown {
+QComboBox {
     background-color: #313244;
     color: #cdd6f4;
     border: 1px solid #45475a;
     border-radius: 10px;
     padding: 6px 12px;
     font-weight: 500;
+    min-width: 160px;
+}
+QComboBox:hover {
+    background-color: #45475a;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 20px;
+}
+QComboBox QAbstractItemView {
+    background-color: #313244;
+    color: #cdd6f4;
+    selection-background-color: #45475a;
+    border: 1px solid #45475a;
+    border-radius: 10px;
 }
 
-.device-dropdown:hover {
+/* ── Status panel ─────────────────────────────────────────────────────────── */
+QFrame#statusPanel {
+    border-radius: 24px;
+    padding: 4px 18px;
+    margin-top: 12px;
+}
+QFrame#statusPanel[state="idle"] {
+    background-color: rgba(69, 71, 90, 51);
+}
+QFrame#statusPanel[state="active"] {
+    background-color: rgba(137, 180, 250, 38);
+    border: 1px solid rgba(137, 180, 250, 76);
+}
+QFrame#statusPanel[state="repairing"] {
+    background-color: rgba(249, 226, 175, 38);
+    border: 1px solid rgba(249, 226, 175, 76);
+}
+QFrame#statusPanel[state="error"] {
+    background-color: rgba(212, 125, 133, 20);
+    border: 1px solid rgba(212, 125, 133, 38);
+}
+QLabel#statusLabel {
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    padding: 8px 0px;
+}
+QLabel#statusLabel[state="idle"]     { color: #bac2de; }
+QLabel#statusLabel[state="active"]   { color: #89b4fa; }
+QLabel#statusLabel[state="repairing"]{ color: #f9e2af; }
+QLabel#statusLabel[state="error"]    { color: #d47d85; }
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+QPushButton#btnShare {
+    background-color: #fab387;
+    color: #11111b;
+    border: none;
+    border-radius: 14px;
+    font-weight: 700;
+    font-size: 14px;
+    padding: 12px 24px;
+    margin-top: 12px;
+}
+QPushButton#btnShare:hover {
+    background-color: #f9e2af;
+}
+QPushButton#btnShare:pressed {
+    background-color: #fab387;
+}
+QPushButton#btnShare[active="true"] {
+    background-color: #89b4fa;
+    color: #11111b;
+}
+QPushButton#btnShare[active="true"]:hover {
+    background-color: #b4befe;
+}
+
+QPushButton#btnReset {
+    background-color: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 14px;
+    padding: 12px 20px;
+    margin-top: 12px;
+    font-weight: 600;
+}
+QPushButton#btnReset:hover {
     background-color: #45475a;
 }
 
-/* Shutdown Button Styles (subtext color on idle, red only on hover) */
-.btn-shutdown {
-    color: #a6adc8;
-    background-color: transparent;
-    border: none;
-    border-radius: 50%;
-    padding: 6px;
-    transition: all 0.2s ease;
+QPushButton#btnSavePreset, QPushButton#btnDeletePreset {
+    background-color: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 10px;
+    padding: 6px 16px;
+    font-weight: 600;
 }
-.btn-shutdown:hover {
-    background-color: rgba(212, 125, 133, 0.08);
+QPushButton#btnSavePreset:hover {
+    background-color: #45475a;
+}
+QPushButton#btnDeletePreset:hover {
+    background-color: rgba(212, 125, 133, 20);
     color: #d47d85;
+    border-color: #d47d85;
+}
+
+QPushButton#btnShutdown {
+    background-color: transparent;
+    color: #a6adc8;
+    border: none;
+    border-radius: 18px;
+    padding: 6px;
+    font-size: 16px;
+}
+QPushButton#btnShutdown:hover {
+    background-color: rgba(212, 125, 133, 20);
+    color: #d47d85;
+}
+
+/* ── App stream rows (Split tab) ─────────────────────────────────────────── */
+QFrame#appRow {
+    background-color: #181825;
+    border: 1px solid #313244;
+    border-radius: 16px;
+    margin: 0px 4px 12px 4px;
+    padding: 12px;
+}
+QFrame#appRow:hover {
+    background-color: #252636;
+    border-color: #45475a;
+}
+QLabel#appName {
+    font-weight: bold;
+    font-size: 14px;
+    color: #cdd6f4;
+}
+QLabel#appStreamId {
+    font-size: 10px;
+    color: #a6adc8;
+}
+
+/* ── Master volume area ──────────────────────────────────────────────────── */
+QLabel#volLabel {
+    color: #cdd6f4;
+    font-weight: 500;
+}
+
+/* ── Dialogs ─────────────────────────────────────────────────────────────── */
+QDialog, QMessageBox {
+    background-color: #1e1e2e;
+    color: #cdd6f4;
+}
+QLineEdit {
+    background-color: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 8px;
+    padding: 8px 12px;
+}
+QDialogButtonBox QPushButton {
+    background-color: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 8px;
+    padding: 6px 18px;
+    font-weight: 600;
+}
+QDialogButtonBox QPushButton:hover {
+    background-color: #45475a;
 }
 """
 
-class MainWindow(Gtk.ApplicationWindow):
-    def __init__(self, app: Gtk.Application, controller: Controller) -> None:
-        super().__init__(application=app)
-        self.controller = controller
-        self.set_title("PipeMix")
-        self.set_default_size(800, 600)
 
+def _set_qss_property(widget: QWidget, prop: str, value: str) -> None:
+    """Set a dynamic QSS property and force a style refresh."""
+    widget.setProperty(prop, value)
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, adapter: ControllerAdapter) -> None:
+        super().__init__()
+        self.adapter = adapter
+
+        self.setWindowTitle("PipeMix")
+        self.setMinimumSize(820, 580)
+        self.resize(880, 620)
+
+        # Track which devices are toggled on
         self.selected: dict[str, bool] = {}
-
         self._split_sig: tuple | None = None
 
-        self._apply_css()
+        # Apply global stylesheet
+        self.setStyleSheet(QSS)
 
-        header = Gtk.HeaderBar()
-        header.set_show_title_buttons(True)
-        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        title_box.set_valign(Gtk.Align.CENTER)
+        # Window icon
+        self._set_window_icon()
 
-        # Try local path first, then installed path, fallback to generic icon
-        logo_path = Path(__file__).parent.parent.parent / "data" / "icons" / "pipemix.png"
-        if not logo_path.exists():
-            logo_path = Path("/usr/share/icons/hicolor/512x512/apps/pipemix.png")
+        # Root layout
+        root_widget = QWidget()
+        root_widget.setObjectName("root")
+        self.setCentralWidget(root_widget)
+        root_layout = QHBoxLayout(root_widget)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        if logo_path.exists():
-            logo_icon = Gtk.Image.new_from_file(str(logo_path))
-            logo_icon.set_pixel_size(24)
-        else:
-            logo_icon = Gtk.Image.new_from_icon_name("audio-card")
+        # Sidebar
+        self._build_sidebar(root_layout)
 
-        logo_label = Gtk.Label(label="PipeMix")
-        logo_label.add_css_class("font-bold")
-        title_box.append(logo_icon)
-        title_box.append(logo_label)
-        header.set_title_widget(title_box)
+        # Stacked pages
+        self.stack = QStackedWidget()
+        self.stack.setObjectName("contentArea")
+        root_layout.addWidget(self.stack, stretch=1)
 
-        self.btn_shutdown = Gtk.Button()
-        self.btn_shutdown.set_icon_name("system-shutdown")
-        self.btn_shutdown.set_tooltip_text("Shutdown PipeMix completely")
-        self.btn_shutdown.add_css_class("btn-shutdown")
-        self.btn_shutdown.connect("clicked", self._on_shutdown)
-        header.pack_end(self.btn_shutdown)
+        self._build_combine_page()
+        self._build_split_page()
 
-        self.set_titlebar(header)
+        # Connect adapter signals
+        self.adapter.devices_changed.connect(self._on_devices)
+        self.adapter.state_changed.connect(self._on_state)
+        self.adapter.health_changed.connect(self._on_health)
 
-        main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        # Split-tab auto-refresh (every 3 s, same as the GTK version)
+        self._split_timer = QTimer(self)
+        self._split_timer.setInterval(3000)
+        self._split_timer.timeout.connect(self._maybe_refresh_split)
+        self._split_timer.start()
 
-        self.sidebar = Gtk.ListBox()
-        self.sidebar.add_css_class("sidebar")
-        self.sidebar.set_size_request(200, -1)
-        self.sidebar.connect("row-selected", self._on_sidebar)
+        # Start on Combine tab
+        self.sidebar.setCurrentRow(0)
 
-        self.row_combine = self._sidebar_row("Combine Sinks", "audio-speakers")
-        self.row_split = self._sidebar_row("Split Audio", "audio-card")
-        self.sidebar.append(self.row_combine)
-        self.sidebar.append(self.row_split)
-        main_box.append(self.sidebar)
+        # Load presets
+        self._refresh_presets(select_id=self.adapter.last_preset)
 
-        self.stack = Gtk.Stack()
-        self.stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
-        self.stack.set_transition_duration(250)
-        self.stack.set_hexpand(True)
-        self.stack.set_vexpand(True)
-        main_box.append(self.stack)
+    # ── Window icon ────────────────────────────────────────────────────────
 
-        self._build_combine()
-        self._build_split()
+    def _set_window_icon(self) -> None:
+        local = Path(__file__).parent.parent.parent / "data" / "icons" / "pipemix.png"
+        installed = Path("/usr/share/icons/hicolor/512x512/apps/pipemix.png")
+        for path in (local, installed):
+            if path.exists():
+                self.setWindowIcon(QIcon(str(path)))
+                return
+        self.setWindowIcon(QIcon.fromTheme("audio-card"))
 
-        self.set_child(main_box)
+    # ── Sidebar ────────────────────────────────────────────────────────────
 
-        self.controller.connect("devices-changed", self._on_devices)
-        self.controller.connect("state-changed", self._on_state)
-        self.controller.connect("health-changed", self._on_health)
+    def _build_sidebar(self, parent_layout: QHBoxLayout) -> None:
+        self.sidebar = QListWidget()
+        self.sidebar.setObjectName("sidebar")
+        self.sidebar.setFixedWidth(210)
+        self.sidebar.setSpacing(2)
 
-        self.sidebar.select_row(self.row_combine)
+        for label, icon_name in (
+            ("Combine Sinks", "audio-speakers"),
+            ("Split Audio",   "audio-card"),
+        ):
+            item = QListWidgetItem(
+                QIcon.fromTheme(icon_name, QIcon.fromTheme("audio-card")),
+                f"  {label}",
+            )
+            item.setSizeHint(item.sizeHint().__class__(210, 48))
+            self.sidebar.addItem(item)
 
-        GLib.timeout_add(3000, self._tick)
+        self.sidebar.currentRowChanged.connect(self._on_sidebar)
+        parent_layout.addWidget(self.sidebar)
 
-    def _apply_css(self) -> None:
-        provider = Gtk.CssProvider()
-        provider.load_from_data(CSS_STYLES.encode("utf-8"))
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(),
-            provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
-
-    def _sidebar_row(self, text: str, icon_name: str) -> Gtk.ListBoxRow:
-        row = Gtk.ListBoxRow()
-        row.add_css_class("sidebar-row")
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        icon = Gtk.Image.new_from_icon_name(icon_name)
-        label = Gtk.Label(label=text)
-        box.append(icon)
-        box.append(label)
-        row.set_child(box)
-        return row
-
-    def _on_sidebar(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
-        if not row:
-            return
-        if row == self.row_combine:
-            self.stack.set_visible_child_name("combine")
-        elif row == self.row_split:
-            self.stack.set_visible_child_name("split")
+    def _on_sidebar(self, index: int) -> None:
+        self.stack.setCurrentIndex(index)
+        if index == 1:
             self._refresh_split()
 
-    # ---------- Combine Sinks page ----------
+    # ── Combine page ───────────────────────────────────────────────────────
 
-    def _build_combine(self) -> None:
-        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        page_box.add_css_class("main-content")
+    def _build_combine_page(self) -> None:
+        page = QWidget()
+        page.setObjectName("contentArea")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(0)
 
-        title = Gtk.Label(label="Combine Sinks")
-        title.set_halign(Gtk.Align.START)
-        title.add_css_class("tab-title")
-        page_box.append(title)
+        # Title
+        title = QLabel("Combine Sinks")
+        title.setObjectName("tabTitle")
+        layout.addWidget(title)
 
-        subtitle = Gtk.Label(label="Select multiple devices to play audio through them simultaneously.")
-        subtitle.set_halign(Gtk.Align.START)
-        subtitle.add_css_class("tab-subtitle")
-        page_box.append(subtitle)
+        subtitle = QLabel("Select multiple devices to play audio through them simultaneously.")
+        subtitle.setObjectName("tabSubtitle")
+        layout.addWidget(subtitle)
+        layout.addSpacing(8)
 
-        preset_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        preset_box.add_css_class("presets-panel")
-        preset_box.set_valign(Gtk.Align.CENTER)
+        # Presets panel
+        presets_frame = QFrame()
+        presets_frame.setObjectName("presetsPanel")
+        presets_layout = QHBoxLayout(presets_frame)
+        presets_layout.setContentsMargins(12, 8, 12, 8)
+        presets_layout.setSpacing(10)
 
-        preset_label = Gtk.Label(label="Presets:")
-        preset_label.add_css_class("font-bold")
-        preset_box.append(preset_label)
+        presets_lbl = QLabel("Presets:")
+        presets_lbl.setObjectName("presetsLabel")
+        presets_layout.addWidget(presets_lbl)
 
-        self.preset_combo = Gtk.ComboBoxText()
-        self.preset_combo.set_hexpand(True)
-        self.preset_combo.add_css_class("device-dropdown")
-        self._preset_handler = self.preset_combo.connect("changed", self._on_preset_changed)
-        preset_box.append(self.preset_combo)
+        self.preset_combo = QComboBox()
+        self.preset_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
+        presets_layout.addWidget(self.preset_combo, stretch=1)
 
-        self.btn_save = Gtk.Button(label="Add Preset")
-        self.btn_save.set_tooltip_text("Save current selection as preset")
-        self.btn_save.connect("clicked", self._on_save_preset)
-        preset_box.append(self.btn_save)
+        self.btn_save = QPushButton("Add Preset")
+        self.btn_save.setObjectName("btnSavePreset")
+        self.btn_save.setToolTip("Save current selection as preset")
+        self.btn_save.clicked.connect(self._on_save_preset)
+        presets_layout.addWidget(self.btn_save)
 
-        self.btn_delete = Gtk.Button(label="Delete")
-        self.btn_delete.set_tooltip_text("Delete selected preset")
-        self.btn_delete.add_css_class("btn-delete")
-        self.btn_delete.connect("clicked", self._on_delete_preset)
-        preset_box.append(self.btn_delete)
+        self.btn_delete = QPushButton("Delete")
+        self.btn_delete.setObjectName("btnDeletePreset")
+        self.btn_delete.setToolTip("Delete selected preset")
+        self.btn_delete.clicked.connect(self._on_delete_preset)
+        presets_layout.addWidget(self.btn_delete)
 
-        page_box.append(preset_box)
+        layout.addWidget(presets_frame)
+        layout.addSpacing(8)
 
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_size_request(-1, 260)
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.add_css_class("device-list-frame")
+        # Device list (scrollable)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFixedHeight(280)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        self.device_list = Gtk.ListBox()
-        self.device_list.add_css_class("device-list")
-        self.device_list.set_selection_mode(Gtk.SelectionMode.NONE)
-        scroll.set_child(self.device_list)
-        page_box.append(scroll)
+        self._device_list_widget = QWidget()
+        self._device_list_widget.setObjectName("contentArea")
+        self._device_list_layout = QVBoxLayout(self._device_list_widget)
+        self._device_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._device_list_layout.setSpacing(0)
+        self._device_list_layout.addStretch()
 
-        self.status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.status_box.add_css_class("status-panel")
-        self.status_box.add_css_class("status-idle")
-        self.status_label = Gtk.Label(label="Idle — Ready to share")
-        self.status_box.append(self.status_label)
-        page_box.append(self.status_box)
+        scroll.setWidget(self._device_list_widget)
+        layout.addWidget(scroll)
 
-        vol_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        vol_box.set_margin_top(16)
-        vol_box.set_margin_bottom(8)
+        # Status panel
+        self._status_frame = QFrame()
+        self._status_frame.setObjectName("statusPanel")
+        status_layout = QHBoxLayout(self._status_frame)
+        status_layout.setContentsMargins(18, 0, 18, 0)
 
-        vol_icon = Gtk.Image.new_from_icon_name("audio-volume-high")
-        vol_label = Gtk.Label(label="Master Volume")
+        self._status_label = QLabel("Idle — Ready to share")
+        self._status_label.setObjectName("statusLabel")
+        status_layout.addWidget(self._status_label)
 
-        self.volume = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
-        self.volume.set_hexpand(True)
-        self.volume.set_draw_value(True)
-        self.volume.set_value(50)
-        self.volume.connect("value-changed", self._on_master_volume)
+        _set_qss_property(self._status_frame, "state", "idle")
+        _set_qss_property(self._status_label, "state", "idle")
+        layout.addWidget(self._status_frame)
 
-        vol_box.append(vol_icon)
-        vol_box.append(vol_label)
-        vol_box.append(self.volume)
-        page_box.append(vol_box)
+        # Master volume
+        vol_row = QHBoxLayout()
+        vol_row.setSpacing(10)
+        vol_row.setContentsMargins(0, 16, 0, 0)
 
-        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        vol_icon = QLabel()
+        vol_icon.setPixmap(QIcon.fromTheme("audio-volume-high").pixmap(20, 20))
+        vol_row.addWidget(vol_icon)
 
-        self.btn_share = Gtk.Button(label="Start Sharing")
-        self.btn_share.set_hexpand(True)
-        self.btn_share.add_css_class("btn-share")
-        self.btn_share.connect("clicked", self._on_share)
-        btn_box.append(self.btn_share)
+        vol_lbl = QLabel("Master Volume")
+        vol_lbl.setObjectName("volLabel")
+        vol_row.addWidget(vol_lbl)
 
-        self.btn_reset = Gtk.Button(label="Reset Audio")
-        self.btn_reset.add_css_class("btn-reset")
-        self.btn_reset.connect("clicked", self._on_reset)
-        btn_box.append(self.btn_reset)
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(50)
+        self.volume_slider.valueChanged.connect(self._on_master_volume)
+        vol_row.addWidget(self.volume_slider, stretch=1)
 
-        page_box.append(btn_box)
-        self.stack.add_named(page_box, "combine")
+        layout.addLayout(vol_row)
 
-        self._refresh_presets(select_id=self.controller.last_preset)
+        # Action buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(16)
+        btn_row.setContentsMargins(0, 0, 0, 0)
 
-    # ---------- Split Audio page ----------
+        self.btn_share = QPushButton("Start Sharing")
+        self.btn_share.setObjectName("btnShare")
+        self.btn_share.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.btn_share.clicked.connect(self._on_share)
+        btn_row.addWidget(self.btn_share)
 
-    def _build_split(self) -> None:
-        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        page_box.add_css_class("main-content")
+        self.btn_reset = QPushButton("Reset Audio")
+        self.btn_reset.setObjectName("btnReset")
+        self.btn_reset.clicked.connect(self._on_reset)
+        btn_row.addWidget(self.btn_reset)
 
-        title = Gtk.Label(label="Split Audio")
-        title.set_halign(Gtk.Align.START)
-        title.add_css_class("tab-title")
-        page_box.append(title)
+        layout.addLayout(btn_row)
+        layout.addStretch()
 
-        subtitle = Gtk.Label(label="Route individual application tabs or profiles to separate output devices.")
-        subtitle.set_halign(Gtk.Align.START)
-        subtitle.add_css_class("tab-subtitle")
-        page_box.append(subtitle)
+        self.stack.addWidget(page)
 
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_size_request(-1, 350)
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.add_css_class("device-list-frame")
+    # ── Split page ─────────────────────────────────────────────────────────
 
-        self.stream_list = Gtk.ListBox()
-        self.stream_list.set_selection_mode(Gtk.SelectionMode.NONE)
-        scroll.set_child(self.stream_list)
-        page_box.append(scroll)
+    def _build_split_page(self) -> None:
+        page = QWidget()
+        page.setObjectName("contentArea")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(0)
 
-        self.stack.add_named(page_box, "split")
+        title = QLabel("Split Audio")
+        title.setObjectName("tabTitle")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Route individual application tabs or profiles to separate output devices.")
+        subtitle.setObjectName("tabSubtitle")
+        layout.addWidget(subtitle)
+        layout.addSpacing(8)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._stream_list_widget = QWidget()
+        self._stream_list_widget.setObjectName("contentArea")
+        self._stream_list_layout = QVBoxLayout(self._stream_list_widget)
+        self._stream_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._stream_list_layout.setSpacing(0)
+        self._stream_list_layout.addStretch()
+
+        scroll.setWidget(self._stream_list_widget)
+        layout.addWidget(scroll, stretch=1)
+
+        self.stack.addWidget(page)
+
+    # ── Split audio refresh ─────────────────────────────────────────────────
+
+    def _maybe_refresh_split(self) -> None:
+        if self.stack.currentIndex() == 1:
+            self._refresh_split()
 
     def _refresh_split(self) -> None:
-        """Rebuild the per-application routing list, but only when something changed."""
+        """Rebuild the per-application routing list only when something changed."""
         try:
-            streams, error = self.controller.backend.list_streams(), None
+            streams = self.adapter.backend.list_streams()
+            error = None
         except Exception as e:
             log.error("Failed to list audio streams: %s", e)
             streams, error = [], "Could not query audio streams."
 
         devices = [
-            d for d in self.controller.devices.values()
+            d for d in self.adapter.devices.values()
             if d.connected and d.sink
         ]
 
-        # Redrawing on every tick would fight the user's open dropdowns, so only
-        # rebuild when the streams or the available outputs actually differ.
         signature = (error, [tuple(s.values()) for s in streams], [d.sink for d in devices])
         if signature == self._split_sig:
             return
         self._split_sig = signature
 
-        while row := self.stream_list.get_row_at_index(0):
-            self.stream_list.remove(row)
+        self._clear_layout(self._stream_list_layout)
 
         if not streams:
-            self._show_message(error or "No applications are currently playing audio.")
+            self._show_stream_message(error or "No applications are currently playing audio.")
             return
 
         for stream in streams:
-            self.stream_list.append(self._stream_row(stream, devices))
+            self._stream_list_layout.insertWidget(
+                self._stream_list_layout.count() - 1,
+                self._build_stream_row(stream, devices),
+            )
 
-    def _stream_row(self, stream: dict, devices: list[AudioDevice]) -> Gtk.ListBoxRow:
-        """One application stream: name, target-output dropdown and a mute toggle."""
-        row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+    def _build_stream_row(self, stream: dict, devices: list[AudioDevice]) -> QFrame:
+        """One application stream: name, target-output dropdown, mute toggle."""
+        frame = QFrame()
+        frame.setObjectName("appRow")
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(12, 10, 12, 10)
+        row.setSpacing(16)
 
-        icon = Gtk.Image.new_from_icon_name("audio-speakers")
-        icon.set_icon_size(Gtk.IconSize.LARGE)
-        row_box.append(icon)
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(QIcon.fromTheme("audio-speakers").pixmap(28, 28))
+        row.addWidget(icon_lbl)
 
-        details_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        details_box.set_hexpand(True)
-        for text, css in ((stream["name"], "app-name"),
-                          (f"Stream ID: {stream['id']}", "app-stream-id")):
-            label = Gtk.Label(label=text)
-            label.set_halign(Gtk.Align.START)
-            label.add_css_class(css)
-            details_box.append(label)
-        row_box.append(details_box)
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        name_lbl = QLabel(stream["name"])
+        name_lbl.setObjectName("appName")
+        id_lbl = QLabel(f"Stream ID: {stream['id']}")
+        id_lbl.setObjectName("appStreamId")
+        text_col.addWidget(name_lbl)
+        text_col.addWidget(id_lbl)
+        row.addLayout(text_col, stretch=1)
 
-        dropdown = Gtk.ComboBoxText()
-        dropdown.add_css_class("device-dropdown")
+        dropdown = QComboBox()
         for dev in devices:
-            dropdown.append(dev.sink, dev.name)
-        dropdown.set_active_id(stream["sink"])
-        dropdown.connect("changed", self._on_route, stream["id"])
-        row_box.append(dropdown)
+            dropdown.addItem(dev.name, userData=dev.sink)
+        current_idx = next(
+            (i for i in range(dropdown.count()) if dropdown.itemData(i) == stream["sink"]),
+            -1,
+        )
+        if current_idx >= 0:
+            dropdown.setCurrentIndex(current_idx)
+        dropdown.currentIndexChanged.connect(
+            lambda _idx, sid=stream["id"], cb=dropdown: self._on_route(cb, sid)
+        )
+        row.addWidget(dropdown)
 
-        mute_btn = Gtk.ToggleButton(active=stream["mute"])
-        mute_btn.set_child(Gtk.Image.new_from_icon_name(
-            "audio-volume-muted" if stream["mute"] else "audio-volume-high"
-        ))
-        mute_btn.connect("toggled", self._on_mute, stream["id"])
-        row_box.append(mute_btn)
+        mute_btn = QPushButton()
+        mute_btn.setCheckable(True)
+        mute_btn.setChecked(stream["mute"])
+        mute_btn.setIcon(
+            QIcon.fromTheme("audio-volume-muted" if stream["mute"] else "audio-volume-high")
+        )
+        mute_btn.setToolTip("Toggle mute")
+        mute_btn.setObjectName("btnReset")   # reuse the neutral button style
+        mute_btn.toggled.connect(lambda muted, sid=stream["id"], btn=mute_btn: self._on_mute(muted, sid, btn))
+        row.addWidget(mute_btn)
 
-        row = Gtk.ListBoxRow()
-        row.add_css_class("app-row")
-        row.set_child(row_box)
-        return row
+        return frame
 
-    def _show_message(self, message: str) -> None:
-        row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        row_box.set_margin_top(48)
-        row_box.set_margin_bottom(48)
-        row_box.set_halign(Gtk.Align.CENTER)
+    def _show_stream_message(self, message: str) -> None:
+        lbl = QLabel(message)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setStyleSheet("color: #a6adc8; padding: 48px;")
+        self._stream_list_layout.insertWidget(
+            self._stream_list_layout.count() - 1, lbl
+        )
 
-        icon = Gtk.Image.new_from_icon_name("dialog-information")
-        icon.set_pixel_size(48)
-        label = Gtk.Label(label=message)
-        label.add_css_class("text-muted")
+    # ── User action handlers ────────────────────────────────────────────────
 
-        row_box.append(icon)
-        row_box.append(label)
-
-        row = Gtk.ListBoxRow()
-        row.set_child(row_box)
-        self.stream_list.append(row)
-
-    def _on_mute(self, button: Gtk.ToggleButton, stream_id: int) -> None:
-        muted = button.get_active()
-        button.get_child().set_from_icon_name(
-            "audio-volume-muted" if muted else "audio-volume-high"
+    def _on_mute(self, muted: bool, stream_id: int, btn: QPushButton) -> None:
+        btn.setIcon(
+            QIcon.fromTheme("audio-volume-muted" if muted else "audio-volume-high")
         )
         try:
-            self.controller.backend.set_stream_mute(stream_id, muted)
+            self.adapter.backend.set_stream_mute(stream_id, muted)
         except Exception as e:
             log.error("Failed to mute stream %d: %s", stream_id, e)
 
-    def _on_route(self, combobox: Gtk.ComboBoxText, stream_id: int) -> None:
-        sink = combobox.get_active_id()
+    def _on_route(self, combo: QComboBox, stream_id: int) -> None:
+        sink = combo.currentData()
         if not sink:
             return
         log.info("UI action: route stream %d to %s", stream_id, sink)
         try:
-            self.controller.route_stream(stream_id, sink)
+            self.adapter.route_stream(stream_id, sink)
         except Exception as e:
             log.error("Failed to route stream %d: %s", stream_id, e)
 
-    def _tick(self) -> bool:
-        if self.stack.get_visible_child_name() == "split":
-            self._refresh_split()
-        return True  # Keep timer running
-
-    # ---------- User actions ----------
-
-    def _devices(self, ids) -> list[AudioDevice]:
-        return [self.controller.devices[i] for i in ids if i in self.controller.devices]
-
-    def _apply_selection(self) -> None:
-        """Share to whatever is ticked, or stop if nothing is."""
-        devices = self._devices(i for i, on in self.selected.items() if on)
-        try:
-            if devices:
-                self.controller.start_sharing(devices)
-            else:
-                self.controller.stop_sharing()
-        except Exception as e:
-            self._error("Sharing failed", str(e))
+    def _on_device_toggle(self, device: AudioDevice, active: bool) -> None:
+        self.selected[device.id] = active
+        self._clear_preset_selection()
+        if self.adapter.session.is_active:
+            self._apply_selection()
 
     def _on_device_volume(self, device: AudioDevice, volume: int) -> None:
         try:
-            self.controller.set_device_volume(device.id, volume)
+            self.adapter.set_device_volume(device.id, volume)
         except Exception as e:
             log.error("Failed to set volume on %s: %s", device.name, e)
 
-    def _on_device_toggle(self, device: AudioDevice, active: bool) -> None:
-        self.selected[device.id] = active
-        self._clear_preset()
-        # A live session follows the ticks immediately.
-        if self.controller.session.is_active:
-            self._apply_selection()
-
-    def _clear_preset(self) -> None:
-        """A hand-toggled device no longer matches the preset, so show the placeholder."""
-        if (self.preset_combo.get_active_id() or "none") == "none":
-            return
-
-        self.preset_combo.handler_block(self._preset_handler)
-        try:
-            self.preset_combo.set_active_id("none")
-        finally:
-            self.preset_combo.handler_unblock(self._preset_handler)
-
-        self.controller.last_preset = None
-
-    def _on_share(self, button: Gtk.Button) -> None:
-        if self.controller.session.is_active:
+    def _on_share(self) -> None:
+        if self.adapter.session.is_active:
             try:
-                self.controller.stop_sharing()
+                self.adapter.stop_sharing()
             except Exception as e:
                 self._error("Failed to Stop Sharing", str(e))
         elif not any(self.selected.values()):
-            self._error("No Devices Selected", "Please toggle on at least one device before sharing.")
+            self._error("No Devices Selected",
+                        "Please toggle on at least one device before sharing.")
         else:
             self._apply_selection()
 
-    def _on_master_volume(self, scale: Gtk.Scale) -> None:
-        self.controller.set_master_volume(int(scale.get_value()))
+    def _apply_selection(self) -> None:
+        devices = [
+            self.adapter.devices[i]
+            for i, on in self.selected.items()
+            if on and i in self.adapter.devices
+        ]
+        try:
+            if devices:
+                self.adapter.start_sharing(devices)
+            else:
+                self.adapter.stop_sharing()
+        except Exception as e:
+            self._error("Sharing failed", str(e))
 
-    def _on_preset_changed(self, combo: Gtk.ComboBoxText) -> None:
-        preset = self.controller.presets.get(combo.get_active_id() or "none")
+    def _on_master_volume(self, value: int) -> None:
+        self.adapter.set_master_volume(value)
+
+    def _on_reset(self) -> None:
+        self.adapter.reset_audio()
+
+    # ── Presets ─────────────────────────────────────────────────────────────
+
+    def _refresh_presets(self, select_id: str | None = None) -> None:
+        self.preset_combo.blockSignals(True)
+        try:
+            self.preset_combo.clear()
+            self.preset_combo.addItem("Select Preset..", userData="none")
+            for pid, preset in self.adapter.presets.items():
+                self.preset_combo.addItem(preset.get("name", pid), userData=pid)
+
+            if select_id:
+                idx = next(
+                    (i for i in range(self.preset_combo.count())
+                     if self.preset_combo.itemData(i) == select_id),
+                    0,
+                )
+                self.preset_combo.setCurrentIndex(idx)
+            else:
+                self.preset_combo.setCurrentIndex(0)
+        finally:
+            self.preset_combo.blockSignals(False)
+
+    def _on_preset_changed(self, _index: int) -> None:
+        pid = self.preset_combo.currentData()
+        preset = self.adapter.presets.get(pid or "none")
         if not preset:
             return
 
         wanted = preset.get("devices", [])
         log.info("Loading preset '%s': %s", preset.get("name"), wanted)
-        self.controller.last_preset = combo.get_active_id()
+        self.adapter.last_preset = pid
         for dev_id in self.selected:
             self.selected[dev_id] = dev_id in wanted
 
-        idx = 0
-        while row := self.device_list.get_row_at_index(idx):
-            if hasattr(row, "device"):
+        # Update all device row toggles
+        layout = self._device_list_layout
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item and isinstance(item.widget(), DeviceRow):
+                row: DeviceRow = item.widget()
                 row.set_active(row.device.id in wanted)
-            idx += 1
 
-        if self.controller.session.is_active:
+        if self.adapter.session.is_active:
             self._apply_selection()
 
-    def _on_save_preset(self, button: Gtk.Button) -> None:
-        """Asks for a name, then saves the ticked devices under it."""
+    def _clear_preset_selection(self) -> None:
+        """Reset dropdown to placeholder without triggering _on_preset_changed."""
+        if self.preset_combo.currentData() == "none":
+            return
+        self.preset_combo.blockSignals(True)
+        try:
+            self.preset_combo.setCurrentIndex(0)
+        finally:
+            self.preset_combo.blockSignals(False)
+        self.adapter.last_preset = None
+
+    def _on_save_preset(self) -> None:
         selected_ids = [i for i, on in self.selected.items() if on]
         if not selected_ids:
-            self._error("No Devices Selected", "Please select at least one device to save as a preset.")
+            self._error("No Devices Selected",
+                        "Please select at least one device to save as a preset.")
             return
 
-        dialog = Gtk.Dialog(title="Save Preset", transient_for=self)
-        dialog.set_modal(True)
+        name, ok = QInputDialog.getText(
+            self, "Save Preset", "Enter a name for this preset:",
+            QLineEdit.EchoMode.Normal, ""
+        )
+        if ok and name.strip():
+            preset_id = self.adapter.save_preset(name.strip(), selected_ids)
+            self._refresh_presets(select_id=preset_id)
 
-        content_area = dialog.get_content_area()
-        content_area.set_orientation(Gtk.Orientation.VERTICAL)
-        content_area.set_spacing(12)
-        content_area.set_margin_top(16)
-        content_area.set_margin_bottom(16)
-        content_area.set_margin_start(16)
-        content_area.set_margin_end(16)
-
-        label = Gtk.Label(label="Enter a name for this preset:")
-        label.set_halign(Gtk.Align.START)
-
-        entry = Gtk.Entry()
-        entry.set_placeholder_text("e.g. Gym buds, Movie Mode")
-
-        content_area.append(label)
-        content_area.append(entry)
-
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Save", Gtk.ResponseType.OK)
-        dialog.set_default_response(Gtk.ResponseType.OK)
-
-        entry.connect("activate", lambda *args: dialog.response(Gtk.ResponseType.OK))
-
-        def on_response(dialog, response_id):
-            if response_id == Gtk.ResponseType.OK:
-                name = entry.get_text().strip()
-                if name:
-                    preset_id = self.controller.save_preset(name, selected_ids)
-                    self._refresh_presets(select_id=preset_id)
-            dialog.destroy()
-
-        dialog.connect("response", on_response)
-        dialog.present()
-
-    def _on_delete_preset(self, button: Gtk.Button) -> None:
-        preset_id = self.preset_combo.get_active_id()
-        if not preset_id or preset_id == "none":
-            self._error("No Preset Selected", "Please select a preset from the dropdown to delete.")
+    def _on_delete_preset(self) -> None:
+        pid = self.preset_combo.currentData()
+        if not pid or pid == "none":
+            self._error("No Preset Selected",
+                        "Please select a preset from the dropdown to delete.")
             return
-
-        self.controller.delete_preset(preset_id)
-        if self.controller.last_preset == preset_id:
-            self.controller.last_preset = None
+        self.adapter.delete_preset(pid)
+        if self.adapter.last_preset == pid:
+            self.adapter.last_preset = None
         self._refresh_presets()
 
-    def _refresh_presets(self, select_id: str | None = None) -> None:
-        """Repopulate the dropdown without the refill counting as a user choice."""
-        self.preset_combo.handler_block(self._preset_handler)
-        try:
-            self.preset_combo.remove_all()
-            self.preset_combo.append("none", "Select Preset..")
-            presets = self.controller.presets
-            for pid, preset in presets.items():
-                self.preset_combo.append(pid, preset.get("name", pid))
+    # ── Controller signal slots ─────────────────────────────────────────────
 
-            if select_id in presets:
-                self.preset_combo.set_active_id(select_id)
-            else:
-                self.preset_combo.set_active(0)
-        finally:
-            self.preset_combo.handler_unblock(self._preset_handler)
-
-    def _on_shutdown(self, button: Gtk.Button) -> None:
-        self.get_application().quit()
-
-    def _on_reset(self, button: Gtk.Button) -> None:
-        self.controller.reset_audio()
-
-    # ---------- Controller signals ----------
-
-    def _on_devices(self, controller: Controller, devices: list[AudioDevice]) -> None:
-        preset = self.controller.presets.get(self.preset_combo.get_active_id() or "none", {})
+    def _on_devices(self, devices: list[AudioDevice]) -> None:
+        preset = self.adapter.presets.get(
+            self.preset_combo.currentData() or "none", {}
+        )
         wanted = preset.get("devices", [])
 
-        while row := self.device_list.get_row_at_index(0):
-            self.device_list.remove(row)
+        self._clear_layout(self._device_list_layout)
 
         for dev in devices:
-            # An offline device cannot be shared to, so it cannot stay ticked.
             if not dev.connected:
                 self.selected[dev.id] = False
             self.selected.setdefault(dev.id, dev.id in wanted)
 
             row = DeviceRow(dev, self._on_device_toggle, self._on_device_volume)
             row.set_active(self.selected[dev.id])
-            self.device_list.append(row)
+            self._device_list_layout.insertWidget(
+                self._device_list_layout.count() - 1, row
+            )
 
-    def _on_state(self, controller: Controller, state: SessionState) -> None:
-        self._set_status(state)
+    def _on_state(self, state: SessionState) -> None:
+        self._update_status(state)
 
         if state == SessionState.ACTIVE:
-            self.btn_share.set_label("Stop Sharing")
-            self.btn_share.add_css_class("active")
-            self.btn_share.set_sensitive(True)
-            self.btn_reset.set_sensitive(True)
+            self.btn_share.setText("Stop Sharing")
+            _set_qss_property(self.btn_share, "active", "true")
+            self.btn_share.setEnabled(True)
+            self.btn_reset.setEnabled(True)
 
-            # Match the new output to the slider, so sharing does not change volume.
-            target = self.controller.active_sink()
+            target = self.adapter.active_sink()
             if target:
                 try:
-                    self.controller.backend.set_volume(target, int(self.volume.get_value()))
+                    self.adapter.backend.set_volume(target, self.volume_slider.value())
                 except Exception as e:
                     log.warning("Failed to initialize session volume: %s", e)
-        elif state in (SessionState.STARTING, SessionState.STOPPING):
-            self.btn_share.set_sensitive(False)
-            self.btn_reset.set_sensitive(False)
-        else:  # IDLE, ERROR
-            self.btn_share.set_label("Start Sharing")
-            self.btn_share.remove_css_class("active")
-            self.btn_share.set_sensitive(True)
-            self.btn_reset.set_sensitive(True)
 
-    def _on_health(self, controller: Controller, status: BackendStatus) -> None:
+        elif state in (SessionState.STARTING, SessionState.STOPPING):
+            self.btn_share.setEnabled(False)
+            self.btn_reset.setEnabled(False)
+
+        else:  # IDLE, ERROR
+            self.btn_share.setText("Start Sharing")
+            _set_qss_property(self.btn_share, "active", "false")
+            self.btn_share.setEnabled(True)
+            self.btn_reset.setEnabled(True)
+
+    def _on_health(self, status: BackendStatus) -> None:
         if status.health != BackendHealth.OK:
             self._error(
                 "Audio Server Issue Detected",
-                f"{status.message}\n\nTechnical details:\n{status.details}"
+                f"{status.message}\n\nTechnical details:\n{status.details}",
             )
 
-    def _set_status(self, state: SessionState) -> None:
-        for c in ["status-idle", "status-active", "status-repairing", "status-error"]:
-            self.status_box.remove_css_class(c)
+    def _update_status(self, state: SessionState) -> None:
+        mapping = {
+            SessionState.ACTIVE:    ("active",    "Sharing Active ✓ — Playing on multiple outputs"),
+            SessionState.REPAIRING: ("repairing", "Reconnecting... Waiting for output device(s)"),
+            SessionState.STARTING:  ("repairing", "Reconnecting... Waiting for output device(s)"),
+            SessionState.ERROR:     ("error",     "Error — Reset Audio recommended"),
+        }
+        state_str, text = mapping.get(state, ("idle", "Idle — Ready to share"))
+        self._status_label.setText(text)
+        _set_qss_property(self._status_frame, "state", state_str)
+        _set_qss_property(self._status_label, "state", state_str)
 
-        if state == SessionState.ACTIVE:
-            self.status_box.add_css_class("status-active")
-            self.status_label.set_text("Sharing Active ✓ — Playing on multiple outputs")
-        elif state == SessionState.REPAIRING or state == SessionState.STARTING:
-            self.status_box.add_css_class("status-repairing")
-            self.status_label.set_text("Reconnecting... Waiting for output device(s)")
-        elif state == SessionState.ERROR:
-            self.status_box.add_css_class("status-error")
-            self.status_label.set_text("Error — Reset Audio recommended")
-        else:
-            self.status_box.add_css_class("status-idle")
-            self.status_label.set_text("Idle — Ready to share")
+    # ── Helpers ─────────────────────────────────────────────────────────────
 
-    # ---------- Dialogs ----------
+    def _clear_layout(self, layout: QVBoxLayout) -> None:
+        """Remove all widgets from a layout, keeping the trailing stretch."""
+        while layout.count() > 1:
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
     def _error(self, title: str, message: str) -> None:
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            message_type=Gtk.MessageType.ERROR,
-            buttons=Gtk.ButtonsType.OK,
-            text=title,
-            secondary_text=message
-        )
-        dialog.set_modal(True)
-        dialog.connect("response", lambda d, r: d.destroy())
-        dialog.present()
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setText(message)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.exec()
+
+    def closeEvent(self, event) -> None:
+        """Ensure the split-refresh timer is stopped on close."""
+        self._split_timer.stop()
+        super().closeEvent(event)

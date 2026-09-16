@@ -1,101 +1,161 @@
-"""One row in the device list: icon, name, battery, on/off switch, volume."""
+"""
+DeviceRow — one card in the device list.
+
+A QFrame styled as a floating card containing:
+  - Device type icon (system theme)
+  - Device name + subtitle (kind + connection status)
+  - Battery label (Bluetooth only)
+  - Toggle checkbox (styled as an on/off switch)
+  - Per-device volume slider
+
+Callbacks:
+  on_toggle(device: AudioDevice, active: bool)
+  on_volume(device: AudioDevice, volume: int)
+
+The set_active() method sets the toggle without firing the callback
+(equivalent to handler_block/unblock in the old GTK code).
+"""
 
 from __future__ import annotations
 
 import logging
-from gi.repository import Gtk
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QSlider,
+    QVBoxLayout,
+)
 
 from pipemix.models import AudioDevice, DeviceKind
 
 log = logging.getLogger(__name__)
 
-ICONS = {
+# Map device kinds to XDG/system-theme icon names
+_ICONS: dict[DeviceKind, str] = {
     DeviceKind.BLUETOOTH: "audio-headphones",
     DeviceKind.HDMI:      "video-display",
     DeviceKind.USB:       "audio-card",
+    DeviceKind.BUILTIN:   "audio-speakers",
 }
 
 
-class DeviceRow(Gtk.ListBoxRow):
+class DeviceRow(QFrame):
+    """A floating card for one audio output device."""
 
-    def __init__(self, device: AudioDevice, on_toggle: callable, on_volume: callable) -> None:
+    def __init__(
+        self,
+        device: AudioDevice,
+        on_toggle: callable,
+        on_volume: callable,
+    ) -> None:
         super().__init__()
         self.device = device
-        self.on_toggle = on_toggle
-        self.on_volume = on_volume
+        self._on_toggle_cb = on_toggle
+        self._on_volume_cb = on_volume
 
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        root.set_margin_top(8)
-        root.set_margin_bottom(8)
-        root.set_margin_start(16)
-        root.set_margin_end(16)
-
-        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-
-        icon = Gtk.Image.new_from_icon_name(ICONS.get(device.kind, "audio-speakers"))
-        icon.set_icon_size(Gtk.IconSize.LARGE)
-        top.append(icon)
-
-        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        text.set_hexpand(True)
-        status = "Connected" if device.connected else "Disconnected"
-        for label, css in ((device.name, "device-row-title"),
-                           (f"{device.kind.value.capitalize()} • {status}", "device-row-subtitle")):
-            widget = Gtk.Label(label=label)
-            widget.set_halign(Gtk.Align.START)
-            widget.add_css_class(css)
-            text.append(widget)
-        top.append(text)
-
-        has_battery = device.kind == DeviceKind.BLUETOOTH and device.battery is not None
-        battery = Gtk.Label(label=f"{device.battery}% 🔋" if has_battery else "")
-        battery.set_margin_end(8)
-        battery.set_visible(has_battery and device.connected)
-        battery.add_css_class("device-row-battery")
-        top.append(battery)
-
-        self.switch = Gtk.Switch()
-        self.switch.set_valign(Gtk.Align.CENTER)
-        self.switch.set_sensitive(device.connected)
-        self._handler = self.switch.connect("state-set", self._on_switch)
-        top.append(self.switch)
-        root.append(top)
-
-        bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        bottom.set_margin_start(40)  # line up under the name
-        bottom.set_margin_end(8)
-        bottom.set_margin_bottom(4)
-        bottom.append(Gtk.Image.new_from_icon_name("audio-volume-medium"))
-
-        self.slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
-        self.slider.set_hexpand(True)
-        self.slider.set_draw_value(False)
-        self.slider.set_value(device.volume)
-        self.slider.set_sensitive(False)
-        self.slider.connect("value-changed", self._on_slider)
-        bottom.append(self.slider)
-        root.append(bottom)
-
-        self.set_child(root)
-        self.add_css_class("device-row")
+        self.setObjectName("deviceRow")
         if not device.connected:
-            self.add_css_class("device-row-offline")
+            self.setProperty("offline", True)
 
-    def _on_switch(self, _widget: Gtk.Switch, state: bool) -> bool:
-        self.slider.set_sensitive(self.device.connected and state)
-        if self.on_toggle:
-            self.on_toggle(self.device, state)
-        return False  # let the switch animate normally
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 10, 16, 10)
+        root.setSpacing(6)
 
-    def _on_slider(self, scale: Gtk.Scale) -> None:
-        if self.on_volume:
-            self.on_volume(self.device, int(scale.get_value()))
+        # ── Top row: icon / name+subtitle / battery / toggle ────────────────
+        top = QHBoxLayout()
+        top.setSpacing(12)
+
+        # Icon
+        icon_name = _ICONS.get(device.kind, "audio-speakers")
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(
+            QIcon.fromTheme(icon_name, QIcon.fromTheme("audio-speakers"))
+            .pixmap(28, 28)
+        )
+        icon_lbl.setFixedSize(28, 28)
+        top.addWidget(icon_lbl)
+
+        # Name + subtitle
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+
+        name_lbl = QLabel(device.name)
+        name_lbl.setObjectName("deviceName")
+
+        status = "Connected" if device.connected else "Disconnected"
+        sub_lbl = QLabel(f"{device.kind.value.capitalize()} • {status}")
+        sub_lbl.setObjectName("deviceSubtitle")
+
+        text_col.addWidget(name_lbl)
+        text_col.addWidget(sub_lbl)
+        top.addLayout(text_col, stretch=1)
+
+        # Battery (Bluetooth + connected only)
+        self._battery_lbl = QLabel()
+        self._battery_lbl.setObjectName("deviceBattery")
+        has_battery = (
+            device.kind == DeviceKind.BLUETOOTH
+            and device.battery is not None
+            and device.connected
+        )
+        if has_battery:
+            self._battery_lbl.setText(f"{device.battery}% 🔋")
+        self._battery_lbl.setVisible(has_battery)
+        top.addWidget(self._battery_lbl)
+
+        # Toggle checkbox (styled as a switch via QSS)
+        self.toggle = QCheckBox()
+        self.toggle.setObjectName("deviceToggle")
+        self.toggle.setEnabled(device.connected)
+        self.toggle.stateChanged.connect(self._on_toggle)
+        top.addWidget(self.toggle)
+
+        root.addLayout(top)
+
+        # ── Bottom row: volume slider ─────────────────────────────────────
+        bottom = QHBoxLayout()
+        bottom.setSpacing(8)
+        bottom.setContentsMargins(36, 0, 0, 0)  # indent to align under name
+
+        vol_icon = QLabel()
+        vol_icon.setPixmap(
+            QIcon.fromTheme("audio-volume-medium").pixmap(18, 18)
+        )
+        bottom.addWidget(vol_icon)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, 100)
+        self.slider.setValue(device.volume)
+        self.slider.setEnabled(False)   # enabled only when toggle is on
+        self.slider.valueChanged.connect(self._on_slider)
+        bottom.addWidget(self.slider)
+
+        root.addLayout(bottom)
+
+    # ── Callbacks ──────────────────────────────────────────────────────────
+
+    def _on_toggle(self, state: int) -> None:
+        active = state == Qt.CheckState.Checked.value
+        self.slider.setEnabled(self.device.connected and active)
+        if self._on_toggle_cb:
+            self._on_toggle_cb(self.device, active)
+
+    def _on_slider(self, value: int) -> None:
+        if self._on_volume_cb:
+            self._on_volume_cb(self.device, value)
+
+    # ── Public API (called by MainWindow) ──────────────────────────────────
 
     def set_active(self, active: bool) -> None:
-        """Set the switch without firing the toggle callback."""
-        self.switch.handler_block(self._handler)
+        """Set the toggle without firing the toggle callback."""
+        self.toggle.blockSignals(True)
         try:
-            self.switch.set_active(active)
-            self.slider.set_sensitive(self.device.connected and active)
+            self.toggle.setChecked(active)
+            self.slider.setEnabled(self.device.connected and active)
         finally:
-            self.switch.handler_unblock(self._handler)
+            self.toggle.blockSignals(False)

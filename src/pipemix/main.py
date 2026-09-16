@@ -132,7 +132,7 @@ def main() -> None:
     setup_logging(args.debug)
 
     if not (args.cli or args.list or args.share or args.reset):
-        sys.exit(PipeMixApp().run(sys.argv))
+        sys.exit(PipeMixApp().run())
 
     ctrl = Controller(PactlBackend(), ConfigManager())
 
