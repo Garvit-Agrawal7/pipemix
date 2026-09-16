@@ -321,6 +321,12 @@ switch:checked > slider {
     background-color: #45475a;
 }
 
+.split-empty-msg {
+    font-size: 1.05em;
+    color: #6c7086;
+    font-weight: 500;
+}
+
 /* Shutdown Button Styles (subtext color on idle, red only on hover) */
 .btn-shutdown {
     color: #a6adc8;
@@ -499,7 +505,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.status_box.add_css_class("status-panel")
         self.status_box.add_css_class("status-idle")
-        self.status_label = Gtk.Label(label="Idle — Ready to share")
+        self.status_label = Gtk.Label(label="Idle - Ready to share")
         self.status_box.append(self.status_label)
         page_box.append(self.status_box)
 
@@ -561,6 +567,7 @@ class MainWindow(Gtk.ApplicationWindow):
         scroll.add_css_class("device-list-frame")
 
         self.stream_list = Gtk.ListBox()
+        self.stream_list.add_css_class("device-list")
         self.stream_list.set_selection_mode(Gtk.SelectionMode.NONE)
         scroll.set_child(self.stream_list)
         page_box.append(scroll)
@@ -641,10 +648,11 @@ class MainWindow(Gtk.ApplicationWindow):
         row_box.set_margin_bottom(48)
         row_box.set_halign(Gtk.Align.CENTER)
 
-        icon = Gtk.Image.new_from_icon_name("dialog-information")
+        icon = Gtk.Image.new_from_icon_name("audio-volume-muted-symbolic")
         icon.set_pixel_size(48)
+        icon.set_opacity(0.4)
         label = Gtk.Label(label=message)
-        label.add_css_class("text-muted")
+        label.add_css_class("split-empty-msg")
 
         row_box.append(icon)
         row_box.append(label)
@@ -889,16 +897,16 @@ class MainWindow(Gtk.ApplicationWindow):
 
         if state == SessionState.ACTIVE:
             self.status_box.add_css_class("status-active")
-            self.status_label.set_text("Sharing Active ✓ — Playing on multiple outputs")
+            self.status_label.set_text("Sharing Active")
         elif state == SessionState.REPAIRING or state == SessionState.STARTING:
             self.status_box.add_css_class("status-repairing")
             self.status_label.set_text("Reconnecting... Waiting for output device(s)")
         elif state == SessionState.ERROR:
             self.status_box.add_css_class("status-error")
-            self.status_label.set_text("Error — Reset Audio recommended")
+            self.status_label.set_text("Error, click reset audio to try again")
         else:
             self.status_box.add_css_class("status-idle")
-            self.status_label.set_text("Idle — Ready to share")
+            self.status_label.set_text("Idle, start sharing to begin")
 
     # ---------- Dialogs ----------
 
