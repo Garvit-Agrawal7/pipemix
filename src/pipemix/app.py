@@ -58,6 +58,7 @@ def run_gui() -> int:
         webview.start(controller.start, gui="gtk", debug=dev)
     finally:
         # Unwind routing before the process goes away.
+        bridge.close()
         controller.stop()
 
     log.info("PipeMix GUI closed.")
