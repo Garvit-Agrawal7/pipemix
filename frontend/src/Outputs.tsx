@@ -301,9 +301,11 @@ export default function Outputs(props: OutputsProps) {
             className="btn sec"
             aria-expanded={open}
             aria-haspopup="menu"
+            aria-label={activePreset ? `Presets, ${activePreset.name} selected` : "Presets"}
             onClick={() => setOpen(!open)}
           >
-            Presets <IconChevron />
+            <span className="ptext">{activePreset ? activePreset.name : "Presets"}</span>
+            <IconChevron />
           </button>
 
           <button className="btn gho" onClick={() => void call("reset_audio").catch(fail)}>
