@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { call, onReady } from "./api";
 import type {
   AudioDevice,
@@ -7,7 +7,7 @@ import type {
   SessionState,
   Snapshot,
 } from "./types";
-import { IconApps, IconChevron, IconMenu, IconOutputs, IconPower } from "./icons";
+import { IconApps, IconClose, IconMenu, IconOutputs, IconPower } from "./icons";
 import Outputs from "./Outputs";
 import Apps from "./Apps";
 
@@ -32,37 +32,24 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [quitting, setQuitting] = useState(false);
-  const [menu, setMenu] = useState(false);
-  const [menuQuit, setMenuQuit] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const menuBtn = useRef<HTMLButtonElement | null>(null);
+  const [open, setOpen] = useState(false);
 
-  // The rail is icon-only, so the menu is where each destination is named.
+  // Escape collapses the rail; a confirm showing swallows it first.
   useEffect(() => {
-    if (!menu) return;
-    const outside = (e: PointerEvent) => {
-      const t = e.target as Node;
-      if (!menuRef.current?.contains(t) && !menuBtn.current?.contains(t)) setMenu(false);
-    };
+    if (!open) return;
     const esc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenu(false);
+      if (e.key !== "Escape") return;
+      if (quitting) setQuitting(false);
+      else setOpen(false);
     };
-    document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", esc);
-    return () => {
-      document.removeEventListener("pointerdown", outside);
-      document.removeEventListener("keydown", esc);
-    };
-  }, [menu]);
+    return () => document.removeEventListener("keydown", esc);
+  }, [open, quitting]);
 
+  // A collapsed rail has no room to ask, so it never holds a pending confirm.
   useEffect(() => {
-    if (!menu) setMenuQuit(false);
-  }, [menu]);
-
-  const go = (s: Screen) => {
-    setScreen(s);
-    setMenu(false);
-  };
+    if (!open) setQuitting(false);
+  }, [open]);
 
 
   // Installed first and never re-installed: it only ever calls setters, so it
@@ -107,18 +94,18 @@ export default function App() {
 
   return (
     <div className="app">
-      <div className="rail">
+      <div className={open ? "rail open" : "rail"}>
         <button
-          ref={menuBtn}
           className="railbtn"
-          aria-label="Menu"
-          aria-haspopup="menu"
-          aria-expanded={menu}
-          title="Menu"
-          onClick={() => setMenu(!menu)}
+          aria-expanded={open}
+          aria-label={open ? "Collapse sidebar" : "Expand sidebar"}
+          title={open ? "Collapse sidebar" : "Expand sidebar"}
+          onClick={() => setOpen(!open)}
         >
           <IconMenu />
+          <span className="rlabel rtitle">PipeMix</span>
         </button>
+
         <button
           className={screen === "outputs" ? "railbtn on" : "railbtn"}
           aria-label="Outputs"
@@ -127,7 +114,9 @@ export default function App() {
           onClick={() => setScreen("outputs")}
         >
           <IconOutputs />
+          <span className="rlabel">Outputs</span>
         </button>
+
         <button
           className={screen === "apps" ? "railbtn on" : "railbtn"}
           aria-label={streamCount > 0 ? `Apps, ${streamCount} playing` : "Apps"}
@@ -136,87 +125,43 @@ export default function App() {
           onClick={() => setScreen("apps")}
         >
           <IconApps />
+          <span className="rlabel">Apps</span>
           {streamCount > 0 && <span className="badge">{streamCount}</span>}
         </button>
+
         <div className="spacer" />
+
         {quitting ? (
           <>
             <button
-              className="iconbtn muted"
-              aria-label="Confirm quit"
-              title="Quit PipeMix"
+              className="railbtn danger"
+              aria-label="Confirm shut down"
+              title="Shut down PipeMix"
               onClick={() => call<null>("shutdown").catch((e) => setError(msg(e)))}
             >
-              <IconPower size={17} />
+              <IconPower />
+              <span className="rlabel">Yes, shut down</span>
             </button>
             <button
-              className="iconbtn"
-              aria-label="Cancel quit"
+              className="railbtn"
+              aria-label="Cancel shut down"
               title="Cancel"
               onClick={() => setQuitting(false)}
             >
-              <IconChevron />
+              <IconClose />
+              <span className="rlabel">Cancel</span>
             </button>
           </>
         ) : (
           <button
             className="railbtn"
-            aria-label="Quit PipeMix"
-            title="Quit PipeMix"
-            onClick={() => setQuitting(true)}
+            aria-label="Shut down PipeMix"
+            title="Shut down PipeMix"
+            onClick={() => (open ? setQuitting(true) : setOpen(true))}
           >
             <IconPower />
+            <span className="rlabel">Shut down</span>
           </button>
-        )}
-
-        {menu && (
-          <div className="menu" ref={menuRef} role="menu" aria-label="PipeMix">
-            <button
-              role="menuitem"
-              className={screen === "outputs" ? "popi sel" : "popi"}
-              onClick={() => go("outputs")}
-            >
-              <IconOutputs size={17} />
-              Outputs
-            </button>
-            <button
-              role="menuitem"
-              className={screen === "apps" ? "popi sel" : "popi"}
-              onClick={() => go("apps")}
-            >
-              <IconApps size={17} />
-              Apps
-              {streamCount > 0 && <span className="mcount">{streamCount}</span>}
-            </button>
-            <div className="popsep" />
-            {menuQuit ? (
-              <>
-                <button
-                  role="menuitem"
-                  className="popi"
-                  style={{ color: "#C97F72" }}
-                  onClick={() => call<null>("shutdown").catch((e) => setError(msg(e)))}
-                >
-                  <IconPower size={17} />
-                  Yes, shut down
-                </button>
-                <button role="menuitem" className="popi" onClick={() => setMenuQuit(false)}>
-                  <span style={{ width: 17 }} />
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <button
-                role="menuitem"
-                className="popi"
-                style={{ color: "#C97F72" }}
-                onClick={() => setMenuQuit(true)}
-              >
-                <IconPower size={17} />
-                Shut down PipeMix
-              </button>
-            )}
-          </div>
         )}
       </div>
 
