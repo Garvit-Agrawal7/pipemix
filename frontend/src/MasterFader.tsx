@@ -1,7 +1,7 @@
 /** The master volume row, shared by both screens because both mockups carry it. */
 
 import { useRef } from "react";
-import { call } from "./api";
+import { call, msg } from "./api";
 import { at, keyValue, useEmit } from "./fader";
 
 export interface MasterFaderProps {
@@ -20,7 +20,7 @@ export default function MasterFader({ value, disabled, onChange, onError }: Mast
     emit(
       () =>
         void call("set_master_volume", v).catch((e: unknown) =>
-          onError(e instanceof Error ? e.message : String(e)),
+          onError(msg(e)),
         ),
       now,
     );

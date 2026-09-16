@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { call, onReady } from "./api";
+import { call, msg, onReady } from "./api";
 import type {
   AudioDevice,
   BackendStatus,
@@ -12,8 +12,6 @@ import Outputs from "./Outputs";
 import Apps from "./Apps";
 
 type Screen = "outputs" | "apps";
-
-const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>("outputs");

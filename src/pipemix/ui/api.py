@@ -147,10 +147,6 @@ class Api:
     def reset_audio(self) -> None:
         self._controller.reset_audio()
 
-    @call
-    def clean_orphans(self) -> None:
-        self._controller.clean_orphans()
-
     # ---------- Per-app routing ----------
 
     @call
@@ -172,10 +168,6 @@ class Api:
             {"id": pid, "name": p.get("name", pid), "devices": p.get("devices", [])}
             for pid, p in self._controller.presets.items()
         ]
-
-    @call
-    def presets(self) -> list[dict]:
-        return self._presets()
 
     @call
     def select_preset(self, preset_id: str | None) -> dict:
@@ -203,9 +195,8 @@ class Api:
         return {"devices": self._devices_payload(), "preset": preset_id}
 
     @call
-    def save_preset(self, name: str, device_ids: list[str] | None = None) -> dict:
-        if device_ids is None:
-            device_ids = [i for i, on in self._selected.items() if on]
+    def save_preset(self, name: str) -> dict:
+        device_ids = [i for i, on in self._selected.items() if on]
         if not device_ids:
             raise BackendError("Enable at least one output before saving a preset.")
 

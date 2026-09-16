@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { call } from "./api";
+import { call, msg } from "./api";
 import MasterFader from "./MasterFader";
 import type { AudioDevice, SessionState, Stream } from "./types";
 import {
@@ -37,7 +37,6 @@ function routingOptions(devices: AudioDevice[], sink: string | null): Opt[] {
   return opts;
 }
 
-const text = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function Apps(props: AppsProps) {
   const [streams, setStreams] = useState<Stream[]>([]);
@@ -60,7 +59,7 @@ export default function Apps(props: AppsProps) {
       try {
         next = await call<Stream[]>("list_streams");
       } catch (e) {
-        error = text(e);
+        error = msg(e);
       }
       if (!alive) return;
       const { devices, sink } = live.current;
@@ -90,7 +89,7 @@ export default function Apps(props: AppsProps) {
     try {
       await call<null>("route_stream", id, sink);
     } catch (e) {
-      props.onError(text(e));
+      props.onError(msg(e));
     }
   };
 
@@ -101,7 +100,7 @@ export default function Apps(props: AppsProps) {
     try {
       await call<null>("set_stream_mute", s.id, !s.mute);
     } catch (e) {
-      props.onError(text(e));
+      props.onError(msg(e));
     }
   };
 
@@ -195,7 +194,7 @@ export default function Apps(props: AppsProps) {
             disabled={busy || !anyConnected}
             onClick={() =>
               void call(sessionLive ? "stop_sharing" : "start_sharing").catch((e: unknown) =>
-                onError(e instanceof Error ? e.message : String(e)),
+                onError(msg(e)),
               )
             }
           >
@@ -205,7 +204,7 @@ export default function Apps(props: AppsProps) {
             className="btn gho"
             onClick={() =>
               void call("reset_audio").catch((e: unknown) =>
-                onError(e instanceof Error ? e.message : String(e)),
+                onError(msg(e)),
               )
             }
           >

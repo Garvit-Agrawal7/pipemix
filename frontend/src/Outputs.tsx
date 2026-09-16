@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { call } from "./api";
+import { call, msg } from "./api";
 import { at, keyValue, useEmit } from "./fader";
 import MasterFader from "./MasterFader";
 import type { AudioDevice, BackendStatus, Preset, SessionState } from "./types";
@@ -78,7 +78,7 @@ export default function Outputs(props: OutputsProps) {
     if (!open) setNaming(false);
   }, [open]);
 
-  const fail = (e: unknown) => onError(e instanceof Error ? e.message : String(e));
+  const fail = (e: unknown) => onError(msg(e));
 
   const setDev = (d: AudioDevice, v: number, now = false) => {
     onDevices(devices.map((x) => (x.id === d.id ? { ...x, volume: v } : x)));
