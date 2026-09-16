@@ -177,3 +177,10 @@ export const IconMenu = ({ size = 21 }: P) => (
     <path d="M4 17h16" />
   </svg>
 );
+
+export const IconClose = ({ size = 21 }: P) => (
+  <svg width={size} height={size} {...base} strokeWidth={1.9}>
+    <path d="M6.5 6.5l11 11" />
+    <path d="M17.5 6.5l-11 11" />
+  </svg>
+);
