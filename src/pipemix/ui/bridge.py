@@ -58,7 +58,7 @@ class Bridge:
             log.debug("Could not push '%s' to the page: %s", event, e)
 
     def _on_devices(self, _controller, devices) -> None:
-        self._push("devices", self.api.devices_payload(devices))
+        self._push("devices", self.api._devices_payload(devices))
 
     def _on_state(self, _controller, state) -> None:
         self._push("state", to_json(state))
