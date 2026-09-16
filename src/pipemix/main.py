@@ -1,7 +1,7 @@
 """
 PipeMix — entry point.
 
-No arguments launches the GTK app; --cli is the interactive text dashboard,
+No arguments launches the GUI; --cli is the interactive text dashboard,
 and --list, --share and --reset are one-shot commands.
 """
 
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from gi.repository import GLib
 
-from pipemix.app import PipeMixApp
+from pipemix.app import run_gui
 from pipemix.controller import Controller
 from pipemix.services.backend.pactl_backend import PactlBackend
 from pipemix.services.config.config_manager import ConfigManager
@@ -132,7 +132,7 @@ def main() -> None:
     setup_logging(args.debug)
 
     if not (args.cli or args.list or args.share or args.reset):
-        sys.exit(PipeMixApp().run(sys.argv))
+        sys.exit(run_gui())
 
     ctrl = Controller(PactlBackend(), ConfigManager())
 
