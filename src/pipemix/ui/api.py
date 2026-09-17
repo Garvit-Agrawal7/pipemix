@@ -119,8 +119,10 @@ class Api:
         return self._devices_payload()
 
     @call
-    def set_device_volume(self, dev_id: str, volume: int) -> None:
+    def set_device_volume(self, dev_id: str, volume: int) -> int:
+        """Answers with the master level, which follows a lone output."""
         self._controller.set_device_volume(dev_id, int(volume))
+        return self._controller.master_volume
 
     @call
     def set_master_volume(self, volume: int) -> None:

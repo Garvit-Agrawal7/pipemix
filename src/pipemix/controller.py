@@ -177,6 +177,8 @@ class Controller(GObject.Object):
         if not dev:
             return
         dev.volume = volume
+        if self._solo() is dev:
+            self.master_volume = volume
         if dev.connected and dev.sink:
             try:
                 self.backend.set_mute(dev.sink, False)
@@ -186,12 +188,42 @@ class Controller(GObject.Object):
 
     def set_master_volume(self, volume: int) -> None:
         self.master_volume = volume
+
+        solo = self._solo()
+        if solo:
+            # The hub is transparent for a lone output, so the level belongs on
+            # the device — and its row has to move with the master row.
+            self.set_device_volume(solo.id, volume)
+            self.emit("devices-changed", list(self.devices.values()))
+            return
+
         target = self.active_sink() if self.session.is_active else self.prev_default
         if target:
             try:
                 self.backend.set_volume(target, volume)
             except Exception as e:
                 log.error("Failed to set master volume on %s: %s", target, e)
+
+    def _solo(self) -> AudioDevice | None:
+        """The one output the session is feeding, when there is only one."""
+        return self.session.devices[0] if len(self.session.devices) == 1 else None
+
+    def _level_hub(self, sink: str, devices: list[AudioDevice]) -> None:
+        """
+        Set the hub's own level, and keep master honest for a lone output.
+
+        With one output the master fader and that device's fader are two handles
+        on the same thing, so the hub steps aside and the device carries the
+        level. If both carried one they would multiply, and the fader would feel
+        dead until it was most of the way up.
+        """
+        solo = devices[0] if len(devices) == 1 else None
+        if solo:
+            self.master_volume = solo.volume
+        try:
+            self.backend.set_volume(sink, 100 if solo else self.master_volume)
+        except Exception as e:
+            log.warning("Failed to set the level on %s: %s", sink, e)
 
     def active_sink(self) -> str | None:
         """Whatever the session is currently playing through."""
@@ -260,10 +292,7 @@ class Controller(GObject.Object):
 
         # Set the volume before switching output, or the first moment of audio
         # lands at whatever level the new sink happened to be at.
-        try:
-            self.backend.set_volume(sink.name, self.master_volume)
-        except Exception as e:
-            log.warning("Failed to pre-set volume on %s: %s", sink.name, e)
+        self._level_hub(sink.name, devices)
 
         self.backend.set_default(sink.name)
         self.backend.move_streams(sink.name, exclude=list(self.overrides))
@@ -273,6 +302,7 @@ class Controller(GObject.Object):
         """Change which outputs the live hub feeds. The hub itself stays put."""
         self._prepare(devices)
         self.backend.set_legs(self.session.sink, devices)
+        self._level_hub(self.session.sink.name, devices)
         self._adopt(devices)
 
     def _prepare(self, devices: list[AudioDevice]) -> None:
@@ -393,6 +423,8 @@ class Controller(GObject.Object):
         self._set_state(SessionState.REPAIRING)
         self.backend.set_legs(self.session.sink, remaining)
         self.session.devices = remaining
+        if remaining:
+            self._level_hub(self.session.sink.name, remaining)
 
         if not remaining:
             log.warning("No sharing devices left connected.")

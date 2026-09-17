@@ -82,7 +82,12 @@ export default function Outputs(props: OutputsProps) {
 
   const setDev = (d: AudioDevice, v: number, now = false) => {
     onDevices(devices.map((x) => (x.id === d.id ? { ...x, volume: v } : x)));
-    emit(() => void call("set_device_volume", d.id, v).catch(fail), now);
+    // When it is the only output live, master is the same control, so take
+    // back whatever the backend settled on rather than guessing here.
+    emit(
+      () => void call<number>("set_device_volume", d.id, v).then(onMaster).catch(fail),
+      now,
+    );
   };
 
   function keys(e: React.KeyboardEvent, v: number, set: (n: number, now?: boolean) => void) {

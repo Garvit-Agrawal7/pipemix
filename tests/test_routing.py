@@ -166,13 +166,61 @@ def test_device_volume_forwarded(tmp_path: Path) -> None:
 
 
 def test_master_volume_during_session(tmp_path: Path) -> None:
+    """Two outputs: master rides the hub and each device keeps its own level."""
     ctrl = _ctrl(tmp_path)
-    dev = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
-    ctrl.start_sharing([dev])
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.start_sharing([d1, d2])
     ctrl.backend.set_volume.reset_mock()
 
     ctrl.set_master_volume(80)
     ctrl.backend.set_volume.assert_called_with(ctrl.session.sink.name, 80)
+    assert (d1.volume, d2.volume) == (50, 50), "device levels must not follow master"
+
+
+# -- One output: the master fader and that device's fader are one control --
+
+def test_master_follows_a_lone_device(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    dev = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    ctrl.devices = {dev.id: dev}
+    ctrl.start_sharing([dev])
+
+    ctrl.set_master_volume(80)
+    assert dev.volume == 80, "the device did not follow master"
+    # The level lands on the device; the hub stays out of the way so the two
+    # do not multiply.
+    ctrl.backend.set_volume.assert_any_call("sink_a", 80)
+    hub = ctrl.session.sink.name
+    assert (hub, 80) not in [c[0] for c in ctrl.backend.set_volume.call_args_list], \
+        "the hub took the level too, so it would be applied twice"
+
+
+def test_lone_device_drags_master(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    dev = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    ctrl.devices = {dev.id: dev}
+    ctrl.start_sharing([dev])
+
+    ctrl.set_device_volume(dev.id, 35)
+    assert ctrl.master_volume == 35, "master did not follow the device"
+
+
+def test_hub_steps_aside_for_one_output(tmp_path: Path) -> None:
+    """Hub at 100 for one output, at master for two, or the levels multiply."""
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    d1.volume = 40
+
+    ctrl.start_sharing([d1])
+    ctrl.backend.set_volume.assert_any_call(ctrl.session.sink.name, 100)
+    assert ctrl.master_volume == 40, "master should adopt the lone device level"
+
+    ctrl.backend.set_volume.reset_mock()
+    ctrl.start_sharing([d1, d2])
+    ctrl.backend.set_volume.assert_any_call(ctrl.session.sink.name, 40)
 
 
 # -- Stream routing override --
