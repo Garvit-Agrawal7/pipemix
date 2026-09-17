@@ -270,6 +270,7 @@ class PactlBackend:
             "pactl", "load-module", "module-combine-sink",
             f"sink_name={name}",
             f"slaves={','.join(slaves)}",
+            f"sinks={','.join(slaves)}",
             "sink_properties=device.description=PipeMix\\ Combined",
         ])
         if rc != 0:
