@@ -79,9 +79,10 @@ class AudioDevice:
 
 @dataclass
 class VirtualSink:
-    """A PipeWire combined sink we created. module is needed to unload it."""
+    """The hub sink we created. module unloads it; legs are its per-output loopbacks."""
     module: int
     name:   str
+    legs:   dict[str, int] = field(default_factory=dict)
 
     @staticmethod
     def make_name() -> str:

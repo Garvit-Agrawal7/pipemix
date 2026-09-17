@@ -1,8 +1,8 @@
 """
 PipeMix — entry point.
 
-No arguments launches the GTK app; --cli is the interactive text dashboard,
-and --list, --share and --reset are one-shot commands.
+No arguments launches the GUI; --cli is the interactive text dashboard,
+and --list, --share and --refresh are one-shot commands.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from gi.repository import GLib
 
-from pipemix.app import PipeMixApp
+from pipemix.app import run_gui
 from pipemix.controller import Controller
 from pipemix.services.backend.pactl_backend import PactlBackend
 from pipemix.services.config.config_manager import ConfigManager
@@ -64,7 +64,7 @@ def print_status(ctrl: Controller) -> None:
         print(f"    [{'✓' if d.connected else ' '}] [{d.kind.value:9}] "
               f"{d.name:<30} ID: {d.id:<36} {status}{battery}")
 
-    print(f"{bar}\n  [s] share all connected  [t] stop  [r] reset audio  [q] quit\n{bar}\n")
+    print(f"{bar}\n  [s] share all connected  [t] stop  [r] rescan devices  [q] quit\n{bar}\n")
 
 
 def run_console(ctrl: Controller) -> None:
@@ -102,8 +102,8 @@ def run_console(ctrl: Controller) -> None:
             elif key == "t":
                 ctrl.stop_sharing()
             elif key == "r":
-                print("  Resetting audio system...")
-                ctrl.reset_audio()
+                print("  Rescanning audio devices...")
+                ctrl.refresh()
         except Exception as e:
             print(f"  Failed: {e}")
 
@@ -125,14 +125,14 @@ def main() -> None:
     parser.add_argument("--cli", action="store_true", help="Interactive text dashboard")
     parser.add_argument("--list", action="store_true", help="List all detected audio outputs")
     parser.add_argument("--share", metavar="IDS", help="Share to comma-separated device IDs")
-    parser.add_argument("--reset", action="store_true", help="Clear virtual sinks and reset routing")
+    parser.add_argument("--refresh", action="store_true", help="Re-scan audio outputs (startup also clears orphaned sinks)")
     parser.add_argument("--debug", action="store_true", help="Verbose logging")
     args = parser.parse_args()
 
     setup_logging(args.debug)
 
-    if not (args.cli or args.list or args.share or args.reset):
-        sys.exit(PipeMixApp().run(sys.argv))
+    if not (args.cli or args.list or args.share or args.refresh):
+        sys.exit(run_gui())
 
     ctrl = Controller(PactlBackend(), ConfigManager())
 
@@ -150,8 +150,8 @@ def main() -> None:
         print("-" * 60)
         sys.exit(0)
 
-    if args.reset:
-        ctrl.reset_audio()
+    if args.refresh:
+        ctrl.refresh()
         sys.exit(0)
 
     ctrl.refresh()

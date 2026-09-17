@@ -16,6 +16,23 @@ from pipemix.services.backend import BackendError, BackendHealth, BackendStatus
 
 log = logging.getLogger(__name__)
 
+# How much buffer each loopback keeps. Low enough that the outputs stay in step
+# with each other, high enough to survive a Bluetooth hiccup — tune by ear.
+LOOPBACK_LATENCY_MS = 60
+
+
+def _load(args: list[str]) -> int | None:
+    """load-module → its module id, or None with the reason logged."""
+    rc, out, err = _run(["pactl", "load-module", *args])
+    if rc != 0:
+        log.error("load-module %s failed: %s", args[0], err.strip() or f"exit {rc}")
+        return None
+    try:
+        return int(out.strip())
+    except ValueError:
+        log.error("load-module %s returned %r", args[0], out.strip())
+        return None
+
 
 def _run(args: list[str]) -> tuple[int, str, str]:
     """Run a command → (rc, stdout, stderr). Never raises; rc is -1 on failure."""
@@ -255,58 +272,90 @@ class PactlBackend:
             raise BackendError(f"Failed to mute stream {stream_id}: {err.strip()}")
 
     def create_sink(self, devices: list[AudioDevice]) -> VirtualSink:
-        """Combine the given outputs into one virtual sink."""
-        slaves = [d.sink for d in devices if d.sink]
-        if not slaves:
+        """
+        A hub sink for the session, with one loopback out to each chosen output.
+
+        Not module-combine-sink: its slave list is fixed at load time, so every
+        toggle meant destroying and rebuilding it, and under that churn it
+        silently stops attaching one of the slaves — a live sink that is deaf on
+        one device. Loopbacks are independent, so a toggle adds or drops exactly
+        one of them and leaves the rest playing.
+        """
+        if not any(d.sink for d in devices):
             raise BackendError(
                 "None of the selected devices have a resolvable PipeWire sink name. "
                 "Are they connected?"
             )
 
         name = VirtualSink.make_name()
-        log.info("Creating virtual sink %s  slaves=[%s]", name, ", ".join(slaves))
-
-        rc, out, err = _run([
-            "pactl", "load-module", "module-combine-sink",
+        module = _load([
+            "module-null-sink",
             f"sink_name={name}",
-            f"slaves={','.join(slaves)}",
             "sink_properties=device.description=PipeMix\\ Combined",
         ])
-        if rc != 0:
-            raise BackendError(f"Failed to create combined sink: {err.strip() or 'unknown error'}")
-
-        try:
-            module = int(out.strip())
-        except ValueError:
-            raise BackendError(f"pactl load-module returned unexpected output: {out.strip()!r}")
+        if module is None:
+            raise BackendError("Failed to create the PipeMix sink.")
 
         sink = VirtualSink(module, name)
         log.info("Created %s", sink)
+        self.set_legs(sink, devices)
         return sink
+
+    def set_legs(self, sink: VirtualSink, devices: list[AudioDevice]) -> None:
+        """Make the hub feed exactly these outputs, touching only what changed."""
+        wanted = {d.sink for d in devices if d.sink}
+
+        for target in wanted - set(sink.legs):
+            module = _load([
+                "module-loopback",
+                f"source={sink.name}.monitor",
+                f"sink={target}",
+                f"latency_msec={LOOPBACK_LATENCY_MS}",
+                f"sink_input_properties=media.name={sink.name}",
+            ])
+            if module is None:
+                continue
+            sink.legs[target] = module
+            log.info("%s now feeds %s", sink.name, target)
+
+        for target in set(sink.legs) - wanted:
+            self._unload(sink.legs.pop(target))
+            log.info("%s no longer feeds %s", sink.name, target)
+
+    def _unload(self, module: int) -> None:
+        rc, _, err = _run(["pactl", "unload-module", str(module)])
+        if rc != 0:
+            log.debug("unload-module %d failed (already gone?): %s", module, err.strip())
 
     def destroy_sink(self, sink: VirtualSink) -> None:
         """Safe to call when the sink is already gone — never raises."""
         log.info("Destroying %s", sink)
-        rc, _, err = _run(["pactl", "unload-module", str(sink.module)])
-        if rc != 0:
-            log.debug("unload-module %d failed (already gone?): %s", sink.module, err.strip())
+        for module in list(sink.legs.values()):
+            self._unload(module)
+        sink.legs.clear()
+        self._unload(sink.module)
 
     def find_orphans(self) -> list[VirtualSink]:
-        """Our sinks left behind by a crash. Never raises."""
-        rc, out, _ = _run(["pactl", "list", "sinks"])
+        """Modules a previous run left behind. Never raises."""
+        rc, out, _ = _run(["pactl", "list", "short", "modules"])
         if rc != 0:
-            log.warning("Could not list sinks during orphan scan.")
+            log.warning("Could not list modules during orphan scan.")
             return []
 
         orphans = []
-        try:
-            for s in _parse_sinks(out):
-                name, module = s.get("name", ""), s.get("module")
-                if name.startswith("pipemix_") and module is not None:
-                    orphans.append(VirtualSink(module, name))
-                    log.warning("Found orphaned sink: %s", name)
-        except Exception as e:
-            log.error("Error during orphan scan: %s", e)
+        for line in out.splitlines():
+            # The hub carries its own name; each loopback carries it too, in the
+            # media.name we stamp on them. One scan over the whole line catches
+            # both, and skips the continuation lines of multi-line module args.
+            found = re.search(r"pipemix_[0-9a-f]+", line)
+            if not found:
+                continue
+            try:
+                module = int(line.split("\t", 1)[0])
+            except ValueError:
+                continue
+            orphans.append(VirtualSink(module, found.group()))
+            log.warning("Found orphaned module %d for %s", module, found.group())
         return orphans
 
     def get_volume(self, sink: str) -> int:

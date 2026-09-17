@@ -1,0 +1,139 @@
+/* Direction B, ported from the approved mockup. Values are the mockup's. */
+
+*{box-sizing:border-box}
+html,body,#root{margin:0;padding:0;height:100%;background:#0F1214;overflow:hidden}
+/* Space Grotesk when the system has it; no network fetch in the .deb. */
+body{font-family:"Space Grotesk","Cantarell","Noto Sans",ui-sans-serif,system-ui,sans-serif;color:#E7ECEF;-webkit-font-smoothing:antialiased}
+a{color:#74C49B}a:hover{color:#9FE0BD}
+button{font:inherit;color:inherit;background:none;border:none;padding:0;margin:0;text-align:left}
+
+.app{width:100%;height:100%;display:flex;background:#0F1214;overflow:hidden}
+.rail{width:64px;flex:none;background:#0A0C0D;border-right:1px solid #1B2124;display:flex;flex-direction:column;align-items:center;padding:18px 0 16px;gap:4px;transition:width 220ms cubic-bezier(.4,0,.2,1)}
+.mark{width:30px;height:30px;color:#74C49B;margin-bottom:14px;flex:none}
+.railbtn{width:44px;height:44px;flex:none;border-radius:14px;display:flex;align-items:center;justify-content:center;color:#6B777D;position:relative;cursor:pointer;transition:background-color 120ms ease,color 120ms ease,border-color 120ms ease}
+.railbtn:hover{color:#9FB0B7;background:#12171A}
+.railbtn:active{background:#161B1E}
+.railbtn.on{color:#74C49B;background:#161B1E;box-shadow:inset 0 0 0 1px #252E32}
+.railbtn.on:hover{color:#9FE0BD;background:#192023}
+.badge{position:absolute;top:4px;right:4px;min-width:17px;height:17px;border-radius:9px;background:#74C49B;color:#0F1214;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 4px}
+.spacer{flex:1}
+.grow{flex:1;min-width:0}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;padding:22px 26px 20px}
+.h1{font-size:24px;font-weight:600;letter-spacing:-.025em;margin:0}
+.sub{font-size:12.5px;color:#7E8A90;margin:5px 0 0}
+.head{margin-bottom:15px}
+
+/* The only scrolling region (devices on Outputs, streams on Apps). */
+.list{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;overflow-y:auto;overflow-x:hidden}
+.list::-webkit-scrollbar{width:8px}
+.list::-webkit-scrollbar-track{background:transparent}
+.list::-webkit-scrollbar-thumb{background:#232C30;border-radius:4px}
+.list::-webkit-scrollbar-thumb:hover{background:#2D383D}
+
+.lv{position:relative;height:62px;flex:none;border-radius:12px;background:#141A1C;overflow:hidden;border:1px solid #1D2427;cursor:ew-resize}
+.lvfill{position:absolute;top:0;bottom:0;left:0;background:linear-gradient(90deg,rgba(116,196,155,.06),rgba(116,196,155,.18));border-right:2px solid #74C49B}
+.lvfill.off{background:rgba(255,255,255,.035);border-right:2px solid #394347}
+.lvfill.warn{background:linear-gradient(90deg,rgba(224,149,90,.06),rgba(224,149,90,.17));border-right:2px solid #E0955A}
+.lvin{position:relative;height:100%;display:flex;align-items:center;gap:13px;padding:0 15px}
+.lvico{width:22px;height:22px;flex:none;color:#9FB0B7;display:flex}
+.lvnm{font-size:14.5px;font-weight:500;letter-spacing:-.01em}
+.lvmeta{font-size:11.5px;color:#76838A;margin-top:2px}
+.lvnum{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums;color:#CFD9DE;letter-spacing:-.02em;width:28px;text-align:right}
+.st{font-size:9.5px;font-weight:700;letter-spacing:.13em;color:#74C49B;display:flex;align-items:center;gap:6px}
+.st.g{color:#6B777D}
+.st.w{color:#E0955A}
+.dot{width:6px;height:6px;border-radius:3px;background:currentColor}
+.tg{width:38px;height:22px;border-radius:11px;background:#222A2E;flex:none;padding:3px;display:flex;cursor:pointer;transition:background-color 120ms ease}
+.tg:hover{background:#2A343A}
+.tg i{width:16px;height:16px;border-radius:8px;background:#4E5A60;display:block}
+.tg.on{background:#74C49B;justify-content:flex-end}
+.tg.on:hover{background:#83CFA8}
+.tg.on i{background:#0F1214}
+.dim{opacity:.45}
+
+.foot{margin-top:15px;display:flex;flex-direction:column;gap:11px}
+.mst{position:relative;height:54px;flex:none;border-radius:12px;background:#141A1C;border:1px solid #232C30;overflow:hidden;cursor:ew-resize}
+.acts{display:flex;gap:9px;position:relative}
+.btn{height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:14px;font-weight:600;cursor:pointer;transition:background-color 120ms ease,color 120ms ease,border-color 120ms ease}
+.pri{flex:1;background:#74C49B;color:#0C1011}
+.pri:hover{background:#83CFA8}
+.pri:active{background:#69B58E}
+.pri.stop{flex:1;background:#1A2225;color:#E7ECEF;border:1px solid #2C363B}
+.pri.stop:hover{background:#1F282C;border-color:#364248}
+.pri.stop:active{background:#161D20}
+.pri.dis{flex:1;background:#151B1E;color:#4E5A60;border:1px solid #1F2629;cursor:default}
+.pri.dis:hover{background:#151B1E}
+.sec{padding:0 15px;background:#141A1C;border:1px solid #232C30;color:#B9C5CB}
+.sec:hover{background:#192124;border-color:#2B353A;color:#CFD9DE}
+.sec:active{background:#121819}
+.gho{padding:0 13px;color:#7E8A90}
+.gho:hover{color:#B9C5CB;background:#141A1C}
+.gho:active{color:#7E8A90}
+
+.pop{position:absolute;bottom:54px;right:88px;width:224px;background:#161D20;border:1px solid #273135;border-radius:13px;padding:6px;box-shadow:0 18px 44px rgba(0,0,0,.65)}
+.popi{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:9px;font-size:13px;color:#B9C5CB;width:100%;cursor:pointer;transition:background-color 120ms ease,color 120ms ease}
+.popi:hover{background:#1B2427;color:#CFD9DE}
+.popi:active{background:#202A2E}
+.popi.sel{background:#1D262A;color:#9FE0BD;font-weight:600}
+.popi.sel:hover{background:#223034;color:#9FE0BD}
+.popsep{height:1px;background:#222B2F;margin:5px 8px}
+
+@keyframes pl{0%,100%{opacity:1}50%{opacity:.2}}
+.pulse{animation:pl 1.4s ease-in-out infinite}
+
+.banner{display:flex;gap:13px;align-items:flex-start;background:#161B1D;border:1px solid #2C363B;border-left:3px solid #E0955A;border-radius:12px;padding:14px 16px;margin-bottom:13px}
+.bsm{height:34px;padding:0 14px;border-radius:9px;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;flex:none;background:#1F272B;color:#E0955A;border:1px solid #38443A;cursor:pointer;transition:background-color 120ms ease,border-color 120ms ease}
+.bsm:hover{background:#262F33}
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#657177;padding:24px 0}
+.selbox{height:34px;border-radius:9px;background:#181F22;border:1px solid #26302F;color:#CFD9DE;font-size:12.5px;display:flex;align-items:center;gap:9px;padding:0 10px 0 12px;flex:none;cursor:pointer;transition:background-color 120ms ease,border-color 120ms ease,color 120ms ease}
+.selbox:hover{background:#1D262A;border-color:#2E3A3A}
+.selbox:active{background:#151B1E}
+.iconbtn{width:34px;height:34px;flex:none;border-radius:9px;background:#181F22;border:1px solid #26302F;color:#7E8A90;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background-color 120ms ease,border-color 120ms ease,color 120ms ease}
+.iconbtn:hover{background:#1D262A;border-color:#2E3A3A;color:#9FB0B7}
+.iconbtn:active{background:#151B1E}
+.iconbtn.muted{color:#E0955A;border-color:#3B3730;background:#211E19}
+.iconbtn.muted:hover{background:#2A2620;border-color:#48412F;color:#E0955A}
+.sid{font-size:11px;color:#5D686E;font-variant-numeric:tabular-nums;margin-top:2px}
+.note{font-size:11.5px;color:#5D686E;margin-top:12px;display:flex;align-items:center;gap:7px}
+
+.srOnly{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
+:focus-visible{outline:2px solid #74C49B;outline-offset:2px}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:0.01ms !important;transition-duration:0.01ms !important}
+}
+
+/* A native <select> ignores inherited colour under the GTK theme, so it has to
+   be un-themed explicitly or its text renders near-invisible on this palette. */
+select.selbox{appearance:none;-webkit-appearance:none;color:#CFD9DE;background-color:#181F22;
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 20 20' fill='none' stroke='%23CFD9DE' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 8 5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 10px center;padding-right:30px;max-width:230px;
+  text-overflow:ellipsis}
+select.selbox option{background:#161D20;color:#CFD9DE}
+
+/* Mockup values the ported classes flattened */
+.st.mlabel{letter-spacing:.17em}
+.lvnum.big{font-size:20px;width:34px}
+.empty svg{opacity:.5}
+.btn.sec[aria-expanded="true"] svg{transform:rotate(180deg)}
+.btn.sec svg{transition:transform 120ms ease}
+.btn.sec:disabled,.btn.pri:disabled{opacity:.5}
+
+/* A long preset name must not squeeze the primary action out of the row. */
+.ptext{max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* The rail expands in place rather than opening a menu over the content. */
+.rail.open{width:194px}
+.railbtn{flex:none;overflow:hidden;white-space:nowrap;
+  transition:width 220ms cubic-bezier(.4,0,.2,1),background-color 120ms ease,color 120ms ease}
+.railbtn svg{flex:none}
+.rail.open .railbtn{width:170px;justify-content:flex-start;padding:0 13px;gap:13px}
+.railbtn.danger{color:#C97F72}
+.railbtn.danger:hover{background:#231B1A}
+
+/* The label is what actually animates in; the icons never move. */
+.rlabel{font-size:13.5px;font-weight:500;opacity:0;max-width:0;
+  transition:opacity 130ms ease,max-width 220ms cubic-bezier(.4,0,.2,1)}
+.rail.open .rlabel{opacity:1;max-width:130px;transition-delay:70ms,0ms}
+.rtitle{font-size:14.5px;font-weight:600;letter-spacing:-.01em;color:#E7ECEF}
+.rail.open .badge{position:static;margin-left:auto}
