@@ -57,8 +57,15 @@ def _backend() -> MagicMock:
     b.resolve_bt_sinks.return_value = {}
     b.list_streams.return_value = []
     b.get_volume.return_value = 50
-    b.create_sink.side_effect = lambda devs: VirtualSink(999, VirtualSink.make_name())
+    b.create_sink.side_effect = _fake_create
     return b
+
+
+def _fake_create(devices) -> VirtualSink:
+    """Mirrors PactlBackend.create_sink: a hub is useless with nothing to feed."""
+    if not any(d.sink for d in devices):
+        raise BackendError("No resolvable sink names.")
+    return VirtualSink(999, VirtualSink.make_name(), {d.sink: 1 for d in devices if d.sink})
 
 
 def _ctrl(tmp_path: Path, backend=None) -> Controller:
@@ -72,17 +79,16 @@ def _ctrl(tmp_path: Path, backend=None) -> Controller:
     return c
 
 
-# -- Single-device sharing (no virtual sink needed) --
+# -- One device still plays through the hub, so a toggle never re-routes --
 
-def test_single_device_no_virtual_sink(tmp_path: Path) -> None:
+def test_single_device_uses_the_hub(tmp_path: Path) -> None:
     ctrl = _ctrl(tmp_path)
     dev = _dev("AA:BB:CC:DD:EE:01", sink="alsa_out.usb")
     ctrl.start_sharing([dev])
 
     assert ctrl.session.state == SessionState.ACTIVE
-    assert ctrl.session.sink is None
-    ctrl.backend.set_default.assert_called_with("alsa_out.usb")
-    ctrl.backend.create_sink.assert_not_called()
+    assert ctrl.session.sink is not None
+    ctrl.backend.set_default.assert_called_with(ctrl.session.sink.name)
 
 
 # -- Multi-device sharing (virtual sink) --
@@ -166,7 +172,7 @@ def test_master_volume_during_session(tmp_path: Path) -> None:
     ctrl.backend.set_volume.reset_mock()
 
     ctrl.set_master_volume(80)
-    ctrl.backend.set_volume.assert_called_with("sink_a", 80)
+    ctrl.backend.set_volume.assert_called_with(ctrl.session.sink.name, 80)
 
 
 # -- Stream routing override --
@@ -241,3 +247,38 @@ if __name__ == "__main__":
                 fn(Path(tmp))
             print(f"  ✓  {name}")
     print("\nAll tests passed.")
+
+
+# -- A toggle moves a leg; it must never tear the hub down --
+
+def test_toggle_keeps_the_hub(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.start_sharing([d1])
+    hub = ctrl.session.sink
+    ctrl.backend.create_sink.reset_mock()
+
+    ctrl.start_sharing([d1, d2])            # stage the second output
+
+    assert ctrl.session.sink is hub
+    ctrl.backend.create_sink.assert_not_called()
+    ctrl.backend.destroy_sink.assert_not_called()
+    ctrl.backend.set_legs.assert_called_with(hub, [d1, d2])
+
+
+def test_disconnect_drops_one_leg(tmp_path: Path) -> None:
+    """A dropout used to rebuild the whole session; now it is one leg."""
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.start_sharing([d1, d2])
+    hub = ctrl.session.sink
+
+    ctrl._on_disconnect(d2.id)
+
+    assert ctrl.session.sink is hub
+    ctrl.backend.destroy_sink.assert_not_called()
+    ctrl.backend.set_legs.assert_called_with(hub, [d1])
+    assert ctrl.session.state == SessionState.ACTIVE

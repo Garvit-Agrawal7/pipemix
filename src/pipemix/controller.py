@@ -8,8 +8,10 @@ signals. All business logic lives here; the UI only triggers and listens.
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -31,6 +33,15 @@ log = logging.getLogger(__name__)
 # ceiling is paid when the sink never shows up at all.
 SINK_TRIES = 20
 SINK_WAIT_MS = 250
+
+
+def locked(fn):
+    """Serialize routing: the page calls in on one thread, BlueZ on another."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return fn(self, *args, **kwargs)
+    return wrapper
 
 
 class Controller(GObject.Object):
@@ -62,6 +73,10 @@ class Controller(GObject.Object):
         self.overrides: dict[int, str] = {}
 
         self.master_volume = 50
+
+        # The page calls in on pywebview's thread while BlueZ events land on the
+        # GTK main thread, and both change which outputs the hub feeds.
+        self._lock = threading.RLock()
 
     # ---------- Startup / shutdown ----------
 
@@ -180,9 +195,7 @@ class Controller(GObject.Object):
 
     def active_sink(self) -> str | None:
         """Whatever the session is currently playing through."""
-        if self.session.sink:
-            return self.session.sink.name
-        return self.session.devices[0].sink if self.session.devices else None
+        return self.session.sink.name if self.session.sink else None
 
     # ---------- Presets ----------
 
@@ -214,36 +227,56 @@ class Controller(GObject.Object):
 
     # ---------- Sharing ----------
 
+    @locked
     def start_sharing(self, devices: list[AudioDevice]) -> None:
         if not devices:
             log.warning("start_sharing() called with no devices.")
             return
 
-        if self.session.is_active:
-            try:
-                self.stop_sharing()
-            except Exception as e:
-                log.warning("Failed to stop previous session: %s", e)
+        if self.session.sink:
+            # The hub is already up, so only its legs move. Nothing is torn
+            # down, and the outputs that are staying never drop out.
+            self._retarget(devices)
+            return
 
         log.info("Starting session with %d device(s)...", len(devices))
         self._set_state(SessionState.STARTING)
 
         try:
             self.prev_default = self.backend.get_default()
-            sink = self._route(devices)
-            self.session.devices = devices
-            self.session.sink = sink
-            self.targets = {d.id for d in devices if d.kind == DeviceKind.BLUETOOTH}
-            self._set_state(SessionState.ACTIVE)
-            log.info("Session active: %s", sink.name if sink else devices[0].sink)
+            self.session.sink = self._route(devices)
+            self._adopt(devices)
+            log.info("Session active: %s", self.active_sink())
         except Exception as e:
             log.error("Failed to start session: %s", e)
             self._set_state(SessionState.ERROR)
             self.stop_sharing()
             raise
 
-    def _route(self, devices: list[AudioDevice]) -> VirtualSink | None:
-        """Combine into a virtual sink, or route straight to a lone device."""
+    def _route(self, devices: list[AudioDevice]) -> VirtualSink:
+        """Stand up the hub and point everything that is playing at it."""
+        self._prepare(devices)
+        sink = self.backend.create_sink(devices)
+
+        # Set the volume before switching output, or the first moment of audio
+        # lands at whatever level the new sink happened to be at.
+        try:
+            self.backend.set_volume(sink.name, self.master_volume)
+        except Exception as e:
+            log.warning("Failed to pre-set volume on %s: %s", sink.name, e)
+
+        self.backend.set_default(sink.name)
+        self.backend.move_streams(sink.name, exclude=list(self.overrides))
+        return sink
+
+    def _retarget(self, devices: list[AudioDevice]) -> None:
+        """Change which outputs the live hub feeds. The hub itself stays put."""
+        self._prepare(devices)
+        self.backend.set_legs(self.session.sink, devices)
+        self._adopt(devices)
+
+    def _prepare(self, devices: list[AudioDevice]) -> None:
+        """Unmute each output and put it back at its own level."""
         for d in devices:
             if d.sink:
                 try:
@@ -252,30 +285,18 @@ class Controller(GObject.Object):
                 except Exception as e:
                     log.warning("Failed to configure %s: %s", d.name, e)
 
-        if len(devices) == 1:
-            target, sink = devices[0].sink, None
-            if not target:
-                raise BackendError(f"{devices[0].name} has no resolved sink name.")
-        else:
-            sink = self.backend.create_sink(devices)
-            target = sink.name
-
-        # Set the volume before switching output, or the first moment of audio
-        # lands at whatever level the new sink happened to be at.
-        try:
-            self.backend.set_volume(target, self.master_volume)
-        except Exception as e:
-            log.warning("Failed to pre-set volume on %s: %s", target, e)
-
-        self.backend.set_default(target)
-        self.backend.move_streams(target, exclude=list(self.overrides))
-        return sink
+    def _adopt(self, devices: list[AudioDevice]) -> None:
+        """Record who the session is for, now that the routing matches."""
+        self.session.devices = devices
+        self.targets = {d.id for d in devices if d.kind == DeviceKind.BLUETOOTH}
+        self._set_state(SessionState.ACTIVE)
 
     def route_stream(self, stream_id: int, target: str) -> None:
         self.backend.move_stream(stream_id, target)
         self.overrides[stream_id] = target
         log.info("Manual route: stream %d → %s", stream_id, target)
 
+    @locked
     def stop_sharing(self) -> None:
         self._set_state(SessionState.STOPPING)
         try:
@@ -302,6 +323,11 @@ class Controller(GObject.Object):
 
     def _on_connect(self, mac: str) -> None:
         log.info("Bluetooth connected: %s", mac)
+        # _resolve_retry gives up on a device marked offline, and a reconnect is
+        # exactly the case where the last disconnect left that flag set.
+        dev = self.devices.get(mac)
+        if dev:
+            dev.connected = True
         # PipeWire creates the sink a moment after BlueZ reports the connection.
         self._resolve_retry(mac, tries=SINK_TRIES)
 
@@ -332,10 +358,13 @@ class Controller(GObject.Object):
             self.devices[mac].sink = sink
             self.emit("devices-changed", list(self.devices.values()))
 
-        if self.session.state == SessionState.REPAIRING and mac in self.targets:
+        # Not gated on REPAIRING: a device that drops while the others carry on
+        # leaves the session active, and it still has to be let back in.
+        if mac in self.targets:
             self._rebuild()
         return GLib.SOURCE_REMOVE
 
+    @locked
     def _on_disconnect(self, mac: str) -> None:
         log.info("Bluetooth disconnected: %s", mac)
 
@@ -359,25 +388,18 @@ class Controller(GObject.Object):
         ]
         remaining += [d for d in self.session.devices if d.kind != DeviceKind.BLUETOOTH]
 
+        # Drop that one leg. The hub stays the default sink either way, so the
+        # streams playing into it keep playing and nothing has to be moved.
         self._set_state(SessionState.REPAIRING)
-        if self.session.sink:
-            try:
-                self.backend.destroy_sink(self.session.sink)
-            except Exception:
-                pass
-            self.session.sink = None
+        self.backend.set_legs(self.session.sink, remaining)
+        self.session.devices = remaining
 
         if not remaining:
             log.warning("No sharing devices left connected.")
             return
 
         log.info("Continuing on: %s", [d.name for d in remaining])
-        try:
-            self.session.sink = self._route(remaining)
-            self._set_state(SessionState.ACTIVE)
-        except Exception as e:
-            log.error("Failed to move session to remaining devices: %s", e)
-            self._set_state(SessionState.ERROR)
+        self._set_state(SessionState.ACTIVE)
 
     def _on_property(self, mac: str, key: str, value: object) -> None:
         dev = self.devices.get(mac)
@@ -385,23 +407,19 @@ class Controller(GObject.Object):
             dev.battery = int(value)
             self.emit("devices-changed", list(self.devices.values()))
 
+    @locked
     def _rebuild(self) -> None:
-        """Restore the session once every target is back with a live sink."""
-        ready = []
-        for mac in self.targets:
-            dev = self.devices.get(mac)
-            if not (dev and dev.connected and dev.sink):
-                return
-            ready.append(dev)
+        """Feed the hub back to each target that has come back, as it comes back."""
+        ready = [
+            d for d in (self.devices.get(mac) for mac in self.targets)
+            if d and d.connected and d.sink
+        ]
         ready += [d for d in self.session.devices if d.kind != DeviceKind.BLUETOOTH]
+        if not (self.session.sink and ready):
+            return
 
-        log.info("All targets reconnected — rebuilding session...")
-        try:
-            self.session.sink = self._route(ready)
-            self._set_state(SessionState.ACTIVE)
-        except Exception as e:
-            log.error("Failed to rebuild session: %s", e)
-            self._set_state(SessionState.ERROR)
+        log.info("Reconnected — feeding %s again.", [d.name for d in ready])
+        self._retarget(ready)
 
     def _set_state(self, state: SessionState) -> None:
         if self.session.state != state:
