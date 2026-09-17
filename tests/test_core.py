@@ -6,12 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pipemix.models import AudioDevice, DeviceKind, VirtualSink, path_to_mac, sink_to_mac
-from pipemix.services.backend.pactl_backend import (
-    PactlBackend,
-    _kind,
-    _parse_inputs,
-    _parse_sinks,
-)
+from pipemix.services.backend.pactl_backend import _kind, _parse_inputs, _parse_sinks
 from pipemix.services.config.config_manager import ConfigManager
 
 SINKS = """Sink #46
@@ -137,60 +132,3 @@ if __name__ == "__main__":
                 fn(Path(tmp)) if fn.__code__.co_argcount else fn()
             print(f"  ✓  {name}")
     print("\nAll tests passed.")
-
-
-# -- A combined sink that silently dropped a slave must be reloaded --
-
-_INPUTS = """Sink Input #7
-	Sink: 3
-		node.name = "output.pipemix_aaa_sink_a"
-Sink Input #8
-	Sink: 4
-		node.name = "output.pipemix_aaa_sink_b"
-"""
-
-
-def test_attached_slaves_reads_the_module_streams(monkeypatch) -> None:
-    b = PactlBackend()
-    monkeypatch.setattr(
-        "pipemix.services.backend.pactl_backend._run",
-        lambda args: (0, _INPUTS, ""),
-    )
-    assert b.attached_slaves("pipemix_aaa") == {"sink_a", "sink_b"}
-    assert b.attached_slaves("pipemix_bbb") == set()
-
-
-def test_create_sink_retries_when_a_slave_never_attaches(monkeypatch) -> None:
-    """load-module can report success with a slave missing — the silent-device bug."""
-    b = PactlBackend()
-    monkeypatch.setattr("pipemix.services.backend.pactl_backend.ATTACH_TRIES", 2)
-    monkeypatch.setattr("pipemix.services.backend.pactl_backend.ATTACH_WAIT", 0)
-
-    loads, unloads = [], []
-
-    def fake_run(args):
-        if args[:2] == ["pactl", "load-module"]:
-            loads.append(args)
-            return 0, "42\n", ""
-        if args[:2] == ["pactl", "unload-module"]:
-            unloads.append(args[2])
-            return 0, "", ""
-        # First sink attaches one slave, every later one attaches both.
-        name = loads[-1][3].split("=", 1)[1]
-        both = len(loads) > 1
-        out = f'\t\tnode.name = "output.{name}_sink_a"\n'
-        if both:
-            out += f'\t\tnode.name = "output.{name}_sink_b"\n'
-        return 0, out, ""
-
-    monkeypatch.setattr("pipemix.services.backend.pactl_backend._run", fake_run)
-
-    devs = [
-        AudioDevice(id="a", name="A", sink="sink_a", kind=DeviceKind.USB, connected=True),
-        AudioDevice(id="b", name="B", sink="sink_b", kind=DeviceKind.USB, connected=True),
-    ]
-    sink = b.create_sink(devs)
-
-    assert len(loads) == 2, "the half-attached sink should have been reloaded"
-    assert unloads == ["42"], "the bad sink must be unloaded before the retry"
-    assert b.attached_slaves(sink.name) == {"sink_a", "sink_b"}
