@@ -236,14 +236,6 @@ class Controller(GObject.Object):
 
     def _route(self, devices: list[AudioDevice]) -> VirtualSink | None:
         """Combine into a virtual sink, or route straight to a lone device."""
-        for d in devices:
-            if d.sink:
-                try:
-                    self.backend.set_mute(d.sink, False)
-                    self.backend.set_volume(d.sink, d.volume)
-                except Exception as e:
-                    log.warning("Failed to configure %s: %s", d.name, e)
-
         if len(devices) == 1:
             target, sink = devices[0].sink, None
             if not target:
@@ -251,6 +243,16 @@ class Controller(GObject.Object):
         else:
             sink = self.backend.create_sink(devices)
             target = sink.name
+
+        # Ensure all physical output sinks are unmuted and configured AFTER
+        # module-combine-sink initializes, overriding any PipeWire auto-mute.
+        for d in devices:
+            if d.sink:
+                try:
+                    self.backend.set_mute(d.sink, False)
+                    self.backend.set_volume(d.sink, d.volume)
+                except Exception as e:
+                    log.warning("Failed to configure %s: %s", d.name, e)
 
         # Set the volume before switching output, or the first moment of audio
         # lands at whatever level the new sink happened to be at.
