@@ -144,8 +144,8 @@ class Api:
         self._controller.stop_sharing()
 
     @call
-    def reset_audio(self) -> None:
-        self._controller.reset_audio()
+    def refresh(self) -> None:
+        self._controller.refresh()
 
     # ---------- Per-app routing ----------
 

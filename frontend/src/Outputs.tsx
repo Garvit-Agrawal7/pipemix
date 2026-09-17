@@ -172,8 +172,8 @@ export default function Outputs(props: OutputsProps) {
             </div>
             <div className="lvmeta">{health.message}</div>
           </div>
-          <button className="bsm" onClick={() => void call("reset_audio").catch(fail)}>
-            Reset audio
+          <button className="bsm" onClick={() => void call("refresh").catch(fail)}>
+            Refresh
           </button>
         </div>
       )}
@@ -308,8 +308,8 @@ export default function Outputs(props: OutputsProps) {
             <IconChevron />
           </button>
 
-          <button className="btn gho" onClick={() => void call("reset_audio").catch(fail)}>
-            Reset audio
+          <button className="btn gho" onClick={() => void call("refresh").catch(fail)}>
+            Refresh
           </button>
 
           {open && (

@@ -215,17 +215,21 @@ def test_bt_disconnect_rebuilds(tmp_path: Path) -> None:
     assert ctrl.session.state in (SessionState.ACTIVE, SessionState.REPAIRING)
 
 
-# -- Reset audio --
+# -- Refresh --
 
-def test_reset_clears_session(tmp_path: Path) -> None:
+def test_refresh_keeps_session(tmp_path: Path) -> None:
     ctrl = _ctrl(tmp_path)
     dev = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
     ctrl.start_sharing([dev])
-    ctrl.reset_audio()
+    sink = ctrl.session.sink
+    ctrl.backend.destroy_sink.reset_mock()
 
-    assert ctrl.session.state == SessionState.IDLE
-    assert ctrl.session.devices == []
-    assert ctrl.targets == set()
+    ctrl.refresh()
+
+    ctrl.backend.destroy_sink.assert_not_called()
+    assert ctrl.session.state == SessionState.ACTIVE
+    assert ctrl.session.sink is sink
+    assert ctrl.targets == {dev.id}
 
 
 if __name__ == "__main__":

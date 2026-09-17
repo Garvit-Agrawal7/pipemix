@@ -203,12 +203,12 @@ export default function Apps(props: AppsProps) {
           <button
             className="btn gho"
             onClick={() =>
-              void call("reset_audio").catch((e: unknown) =>
+              void call("refresh").catch((e: unknown) =>
                 onError(msg(e)),
               )
             }
           >
-            Reset audio
+            Refresh
           </button>
         </div>
       </div>

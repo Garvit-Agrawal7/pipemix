@@ -9,8 +9,11 @@ type Envelope<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export async function call<T>(name: string, ...args: unknown[]): Promise<T> {
   const api = window.pywebview?.api;
-  const fn = api?.[name];
-  if (!fn) throw new Error(`Bridge not ready: ${name}`);
+  if (!api) throw new Error(`Bridge not ready: ${name}`);
+  // A method missing here means the page and Api disagree — almost always a
+  // frontend built before the Python side was renamed.
+  const fn = api[name];
+  if (!fn) throw new Error(`No such bridge method: ${name}. Rebuild the frontend.`);
   const res = (await fn(...args)) as Envelope<T>;
   if (!res?.ok) throw new Error(res?.error ?? `${name} failed`);
   return res.value;

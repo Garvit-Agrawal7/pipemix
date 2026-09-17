@@ -25,6 +25,13 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# How long to wait for PipeWire to publish a bluez sink after BlueZ says the
+# device is connected. A slow headset can take several seconds; each try is one
+# cheap pactl call and the first success exits, so the only cost of a generous
+# ceiling is paid when the sink never shows up at all.
+SINK_TRIES = 20
+SINK_WAIT_MS = 250
+
 
 class Controller(GObject.Object):
 
@@ -94,6 +101,7 @@ class Controller(GObject.Object):
 
     def refresh(self) -> None:
         """Re-enumerate outputs, merging PipeWire state with BlueZ state."""
+        self.emit("health-changed", self.backend.health())
         try:
             bt = self.monitor.connected()
             sinks = self.backend.resolve_bt_sinks([d["mac"] for d in bt])
@@ -290,44 +298,30 @@ class Controller(GObject.Object):
             self._set_state(SessionState.ERROR)
             raise
 
-    def reset_audio(self) -> None:
-        """Force-clean every PipeMix sink and start over."""
-        log.info("Reset Audio requested.")
-        self._set_state(SessionState.REPAIRING)
-        try:
-            if self.session.sink:
-                try:
-                    self.backend.destroy_sink(self.session.sink)
-                except Exception:
-                    pass
-
-            self.clean_orphans()
-            self.emit("health-changed", self.backend.health())
-            self.refresh()
-
-            self.session = SharingSession()
-            self.targets.clear()
-            self.overrides.clear()
-            self._set_state(SessionState.IDLE)
-        except Exception as e:
-            log.error("Reset Audio failed: %s", e)
-            self._set_state(SessionState.ERROR)
-
     # ---------- Bluetooth events ----------
 
     def _on_connect(self, mac: str) -> None:
         log.info("Bluetooth connected: %s", mac)
         # PipeWire creates the sink a moment after BlueZ reports the connection.
-        self._resolve_retry(mac, tries=6)
+        self._resolve_retry(mac, tries=SINK_TRIES)
 
     def _resolve_retry(self, mac: str, tries: int) -> bool:
+        # The window is long enough that a disconnect can land mid-chain, and a
+        # late success would mark a device that is already gone as connected.
+        dev = self.devices.get(mac)
+        if dev and not dev.connected:
+            return GLib.SOURCE_REMOVE
+
         sink = self.backend.resolve_bt_sink(mac)
 
         if not sink:
             if tries > 0:
-                GLib.timeout_add(250, self._resolve_retry, mac, tries - 1)
+                GLib.timeout_add(SINK_WAIT_MS, self._resolve_retry, mac, tries - 1)
             else:
-                log.warning("Could not resolve a sink for %s after retries.", mac)
+                log.warning(
+                    "No sink for %s after %.1fs — it will appear on the next refresh.",
+                    mac, SINK_TRIES * SINK_WAIT_MS / 1000,
+                )
             return GLib.SOURCE_REMOVE
 
         log.info("Resolved sink for %s: %s", mac, sink)
