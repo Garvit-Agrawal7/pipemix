@@ -232,6 +232,30 @@ def test_refresh_keeps_session(tmp_path: Path) -> None:
     assert ctrl.targets == {dev.id}
 
 
+def test_reconnect_resolves_sink_and_rebuilds(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.start_sharing([d1, d2])
+
+    # Device A disconnects — session falls back to B alone.
+    ctrl._on_disconnect("AA:BB:CC:DD:EE:01")
+    assert d1.connected is False
+    assert d1.sink is None
+
+    # Device A reconnects — _on_connect should mark it connected and resolve.
+    ctrl.backend.resolve_bt_sink.return_value = "sink_a_new"
+    ctrl.backend.create_sink.reset_mock()
+    ctrl._on_connect("AA:BB:CC:DD:EE:01")
+
+    assert d1.connected is True
+    assert d1.sink == "sink_a_new"
+    # Session should rebuild to include both devices again.
+    ctrl.backend.create_sink.assert_called_once()
+    assert ctrl.session.state == SessionState.ACTIVE
+
+
 if __name__ == "__main__":
     import tempfile
 
@@ -241,3 +265,66 @@ if __name__ == "__main__":
                 fn(Path(tmp))
             print(f"  ✓  {name}")
     print("\nAll tests passed.")
+
+
+# -- Toggling an output must not rip down the combined sink first --
+
+def test_swap_creates_before_destroying(tmp_path: Path) -> None:
+    """A rebuild keeps the old sink up until the new one has the streams."""
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    d3 = _dev("AA:BB:CC:DD:EE:03", sink="sink_c")
+    ctrl.start_sharing([d1, d2])
+    first = ctrl.session.sink
+
+    order = []
+    ctrl.backend.create_sink.side_effect = lambda devs: (
+        order.append("create") or VirtualSink(1000, "pipemix_second")
+    )
+    ctrl.backend.destroy_sink.side_effect = lambda s: order.append("destroy")
+
+    ctrl.start_sharing([d1, d2, d3])
+
+    assert order == ["create", "destroy"], order
+    assert ctrl.backend.destroy_sink.call_args[0][0] is first
+    assert ctrl.session.sink.name == "pipemix_second"
+
+
+def test_toggle_with_same_sinks_is_a_noop(tmp_path: Path) -> None:
+    """A device with no sink changes the selection, not the routing."""
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    offline = _dev("AA:BB:CC:DD:EE:03", sink=None)
+    ctrl.start_sharing([d1, d2])
+    sink = ctrl.session.sink
+    ctrl.backend.create_sink.reset_mock()
+    ctrl.backend.destroy_sink.reset_mock()
+
+    ctrl.start_sharing([d1, d2, offline])
+
+    assert ctrl.session.sink is sink
+    ctrl.backend.create_sink.assert_not_called()
+    ctrl.backend.destroy_sink.assert_not_called()
+
+
+def test_reconnect_does_not_leak_the_previous_sink(tmp_path: Path) -> None:
+    """_rebuild used to overwrite session.sink and leak the module behind it."""
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.start_sharing([d1, d2])
+
+    ctrl._on_disconnect(d2.id)          # falls back to d1 alone, no combined sink
+    reduced = ctrl.session.sink
+    d2.connected, d2.sink = True, "sink_b"
+    ctrl.backend.destroy_sink.reset_mock()
+    ctrl._rebuild()
+
+    assert ctrl.session.state == SessionState.ACTIVE
+    for call in ctrl.backend.destroy_sink.call_args_list:
+        assert call[0][0] is not ctrl.session.sink
+    if reduced:
+        ctrl.backend.destroy_sink.assert_any_call(reduced)
