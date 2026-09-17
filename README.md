@@ -4,7 +4,7 @@ Play the same audio through several outputs at once on Linux — laptop speakers
 and a Bluetooth headset together, two Bluetooth speakers in different rooms, or
 whatever combination you like — with a volume fader for each one.
 
-![The Outputs screen, with two devices live and a preset loaded](docs/outputs.png)
+![The Outputs screen, with two devices live and a preset loaded](<img width="880" height="660" alt="outputs" src="https://github.com/user-attachments/assets/b513daf2-a827-416c-a508-74c7d9da718b" />)
 
 PipeWire can do this on its own, but only through config files and `pactl`
 incantations. PipeMix gives it a window: tick the outputs you want, drag a row
@@ -25,7 +25,7 @@ to set its level, and save the combination as a preset.
 - **Toggle outputs mid-session.** Adding or removing a device doesn't interrupt
   the ones that are staying.
 
-![The Apps screen, routing individual applications](docs/apps.png)
+![The Apps screen, routing individual applications](<img width="880" height="660" alt="apps" src="https://github.com/user-attachments/assets/1f1bbe2f-310d-40e7-81e7-7835064bfb8f" />)
 
 ## Requirements
 
