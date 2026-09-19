@@ -208,9 +208,13 @@ class Controller(GObject.Object):
         if solo:
             self.master_volume = solo.volume
         try:
-            self.backend.set_volume(sink, 100 if solo else self.master_volume)
+            self.backend.set_volume(sink, self._hub_level(devices))
         except Exception as e:
             log.warning("Failed to set the level on %s: %s", sink, e)
+
+    def _hub_level(self, devices: list[AudioDevice]) -> int:
+        """100 when a lone output carries the level itself, else the master."""
+        return 100 if len(devices) == 1 else self.master_volume
 
     def active_sink(self) -> str | None:
         """Whatever the session is currently playing through."""
@@ -288,6 +292,13 @@ class Controller(GObject.Object):
     def _retarget(self, devices: list[AudioDevice]) -> None:
         """Change which outputs the live hub feeds. The hub itself stays put."""
         self._prepare(devices)
+
+        # Going from one output to two, the hub is still at 100 because the lone
+        # device was carrying the level. Duck it before the new leg attaches, or
+        # that output gets one blast at full volume before the level catches up.
+        if self._hub_level(devices) < self._hub_level(self.session.devices):
+            self._level_hub(self.session.sink.name, devices)
+
         self.backend.set_legs(self.session.sink, devices)
         self._level_hub(self.session.sink.name, devices)
         self._adopt(devices)
