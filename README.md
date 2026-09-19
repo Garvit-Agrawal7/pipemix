@@ -130,4 +130,4 @@ Two constraints worth knowing before you change anything:
 
 ## License
 
-GPL-3.0-or-later.
+GPL-3.0-or-later — see [LICENSE](LICENSE).
