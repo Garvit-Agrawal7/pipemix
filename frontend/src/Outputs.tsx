@@ -123,13 +123,17 @@ export default function Outputs(props: OutputsProps) {
       })
       .catch(fail);
 
-  const connected = devices.filter((d) => d.connected).length;
-  const staged = devices.filter((d) => d.selected).length;
-  const liveCount = devices.filter((d) => d.target && d.connected).length;
-  const reconCount = devices.filter((d) => d.target && !d.connected).length;
+  const visible = devices.filter((d) => d.connected || (d.target && state === "repairing"));
+  const connected = visible.filter((d) => d.connected).length;
+  const staged = visible.filter((d) => d.selected).length;
+  const liveCount = visible.filter((d) => d.target && d.connected).length;
+  const reconCount = visible.filter((d) => d.target && !d.connected).length;
   const live = state === "active" || state === "repairing";
   const busy = state === "starting" || state === "stopping";
   const activePreset = presets.find((p) => p.id === preset);
+  const offlineInPreset = activePreset
+    ? activePreset.devices.filter((id) => !devices.some((d) => d.id === id && d.connected)).length
+    : 0;
 
   let sub: string;
   if (live) {
@@ -141,9 +145,9 @@ export default function Outputs(props: OutputsProps) {
       .filter(Boolean)
       .join(" · ");
   } else if (!connected) {
-    sub = `Nothing connected · ${devices.length} devices remembered`;
+    sub = "No devices connected";
   } else {
-    sub = `${devices.length} known · ${staged} staged · drag any row to set its level`;
+    sub = `${connected} connected · ${staged} staged`;
   }
 
   const priCls = busy || !connected ? "btn pri dis" : live ? "btn pri stop" : "btn pri";
@@ -184,7 +188,14 @@ export default function Outputs(props: OutputsProps) {
       )}
 
       <div className="list">
-        {devices.map((d) => {
+        {offlineInPreset > 0 && (
+          <div className="note">
+            {offlineInPreset === 1
+              ? "1 device in this preset is offline"
+              : `${offlineInPreset} devices in this preset are offline`}
+          </div>
+        )}
+        {visible.map((d) => {
           const recon = !d.connected && d.target && state === "repairing";
           const isLive = d.connected && d.target && state === "active";
           const shown = d.connected || recon;

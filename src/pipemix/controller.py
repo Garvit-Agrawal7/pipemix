@@ -142,19 +142,6 @@ class Controller(GObject.Object):
                     volume=self._volume_of(mac, sink),
                 )
 
-            # Keep saved-but-offline devices visible so presets still make sense.
-            saved = set(self.config.data["devices"])
-            for preset in self.config.data["presets"].values():
-                saved.update(preset.get("devices", []))
-
-            for dev_id in saved - set(found):
-                found[dev_id] = AudioDevice(
-                    id=dev_id,
-                    name=self.config.device_name(dev_id, f"Offline Device ({dev_id})"),
-                    sink=None,
-                    kind=DeviceKind.BLUETOOTH if ":" in dev_id else DeviceKind.UNKNOWN,
-                )
-
             self.devices = found
             self.emit("devices-changed", list(found.values()))
 
