@@ -17,11 +17,7 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>("outputs");
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [state, setState] = useState<SessionState>("idle");
-  const [health, setHealth] = useState<BackendStatus>({
-    health: "ok",
-    message: "",
-    details: "",
-  });
+  const [health, setHealth] = useState<BackendStatus>({ health: "ok", message: "" });
   const [master, setMaster] = useState(50);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [preset, setPreset] = useState<string | null>(null);

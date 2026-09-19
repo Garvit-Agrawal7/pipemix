@@ -15,8 +15,7 @@ class BackendHealth(Enum):
 @dataclass
 class BackendStatus:
     health:  BackendHealth
-    message: str       # shown in the UI
-    details: str = ""  # logged only
+    message: str  # shown in the UI
 
 
 class BackendError(Exception):

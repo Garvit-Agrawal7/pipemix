@@ -29,7 +29,6 @@ export interface AudioDevice {
 export interface BackendStatus {
   health: BackendHealth;
   message: string;
-  details: string;
 }
 
 export interface Stream {

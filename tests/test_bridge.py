@@ -103,6 +103,6 @@ def test_to_json_unwraps_dataclasses_and_enums():
         "connected": False, "battery": 80, "volume": 50,
     }
     assert to_json(SessionState.REPAIRING) == "repairing"
-    assert to_json(BackendStatus(BackendHealth.DEGRADED, "hmm", "detail")) == {
-        "health": "degraded", "message": "hmm", "details": "detail",
+    assert to_json(BackendStatus(BackendHealth.DEGRADED, "hmm")) == {
+        "health": "degraded", "message": "hmm",
     }

@@ -134,17 +134,16 @@ class PactlBackend:
         rc, out, err = _run(["pactl", "info"])
 
         if rc != 0:
+            log.debug("pactl info failed: %s", err.strip() or f"exit {rc}")
             return BackendStatus(
                 BackendHealth.UNAVAILABLE,
                 "PipeWire is not running, or pactl is not installed.",
-                err.strip() or f"pactl exited with code {rc}",
             )
         if "PipeWire" not in out:
             return BackendStatus(
                 BackendHealth.DEGRADED,
                 "pactl is connected, but PipeWire was not detected. "
                 "Some features may not work.",
-                out[:300],
             )
         return BackendStatus(BackendHealth.OK, "PipeWire is running.")
 
