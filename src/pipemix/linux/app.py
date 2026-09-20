@@ -14,11 +14,11 @@ from pathlib import Path
 
 import webview
 
-from pipemix.controller import Controller
-from pipemix.services.backend.pactl_backend import PactlBackend
-from pipemix.services.config.config_manager import ConfigManager
-from pipemix.ui.api import Api
-from pipemix.ui.bridge import Bridge
+from pipemix.linux.controller import Controller
+from pipemix.linux.services.backend.pactl_backend import PactlBackend
+from pipemix.linux.services.config.config_manager import ConfigManager
+from pipemix.linux.ui.api import Api
+from pipemix.linux.ui.bridge import Bridge
 
 log = logging.getLogger("pipemix.app")
 

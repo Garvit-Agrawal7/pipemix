@@ -16,10 +16,10 @@ from pathlib import Path
 
 from gi.repository import GLib
 
-from pipemix.app import run_gui
-from pipemix.controller import Controller
-from pipemix.services.backend.pactl_backend import PactlBackend
-from pipemix.services.config.config_manager import ConfigManager
+from pipemix.linux.app import run_gui
+from pipemix.linux.controller import Controller
+from pipemix.linux.services.backend.pactl_backend import PactlBackend
+from pipemix.linux.services.config.config_manager import ConfigManager
 
 log = logging.getLogger("pipemix.main")
 

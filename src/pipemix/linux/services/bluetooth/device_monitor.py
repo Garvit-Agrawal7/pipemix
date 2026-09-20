@@ -13,7 +13,7 @@ from typing import Callable
 
 from gi.repository import Gio, GLib
 
-from pipemix.models import path_to_mac
+from pipemix.linux.models import path_to_mac
 
 log = logging.getLogger(__name__)
 

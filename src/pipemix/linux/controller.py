@@ -17,13 +17,13 @@ from typing import TYPE_CHECKING
 
 from gi.repository import GLib, GObject
 
-from pipemix.models import AudioDevice, DeviceKind, SessionState, SharingSession, VirtualSink
-from pipemix.services.backend import BackendError, BackendHealth
-from pipemix.services.bluetooth.device_monitor import DeviceMonitor
-from pipemix.services.config.config_manager import ConfigManager
+from pipemix.linux.models import AudioDevice, DeviceKind, SessionState, SharingSession, VirtualSink
+from pipemix.linux.services.backend import BackendHealth
+from pipemix.linux.services.bluetooth.device_monitor import DeviceMonitor
+from pipemix.linux.services.config.config_manager import ConfigManager
 
 if TYPE_CHECKING:
-    from pipemix.services.backend.pactl_backend import PactlBackend
+    from pipemix.linux.services.backend.pactl_backend import PactlBackend
 
 log = logging.getLogger(__name__)
 

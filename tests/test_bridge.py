@@ -14,9 +14,9 @@ import time
 
 from gi.repository import GObject
 
-from pipemix.models import AudioDevice, DeviceKind, SessionState
-from pipemix.services.backend import BackendHealth, BackendStatus
-from pipemix.ui.bridge import Bridge, to_json
+from pipemix.linux.models import AudioDevice, DeviceKind, SessionState
+from pipemix.linux.services.backend import BackendHealth, BackendStatus
+from pipemix.linux.ui.bridge import Bridge, to_json
 
 
 class FakeController(GObject.Object):

@@ -15,8 +15,8 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from pipemix.controller import Controller
-    from pipemix.ui.api import Api
+    from pipemix.linux.controller import Controller
+    from pipemix.linux.ui.api import Api
 
 log = logging.getLogger(__name__)
 

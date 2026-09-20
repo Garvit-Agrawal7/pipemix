@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -39,10 +39,10 @@ _gi_mock.repository.GLib = _FakeGLib
 sys.modules.setdefault("gi", _gi_mock)
 sys.modules.setdefault("gi.repository", _gi_mock.repository)
 
-from pipemix.models import AudioDevice, DeviceKind, SessionState, VirtualSink
-from pipemix.services.backend import BackendError, BackendHealth, BackendStatus
-from pipemix.services.config.config_manager import ConfigManager
-from pipemix.controller import Controller
+from pipemix.linux.models import AudioDevice, DeviceKind, SessionState, VirtualSink
+from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
+from pipemix.linux.services.config.config_manager import ConfigManager
+from pipemix.linux.controller import Controller
 
 
 def _dev(mac: str, name: str = "Dev", sink: str | None = None, kind=DeviceKind.BLUETOOTH) -> AudioDevice:
