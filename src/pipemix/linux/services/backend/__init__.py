@@ -16,6 +16,7 @@ class BackendHealth(Enum):
 class BackendStatus:
     health:  BackendHealth
     message: str  # shown in the UI
+    engine:  str = "native"  # "native" on Linux; "hub" / "leader" on Windows
 
 
 class BackendError(Exception):
