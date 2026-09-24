@@ -28,7 +28,7 @@ export interface OutputsProps {
   onError: (msg: string) => void;
 }
 
-const KIND: Record<string, string> = {
+export const KIND: Record<string, string> = {
   bluetooth: "Bluetooth",
   usb: "USB",
   hdmi: "HDMI",

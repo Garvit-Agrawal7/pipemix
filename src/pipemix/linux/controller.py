@@ -69,8 +69,13 @@ class Controller(GObject.Object):
         # MACs we want back if they reconnect mid-session.
         self.targets: set[str] = set()
 
-        # Streams the user routed by hand, so a rebuild does not drag them back.
-        self.overrides: dict[int, str] = {}
+        # Streams the user routed by hand → the device ids they picked, so a
+        # rebuild does not drag them back.
+        self.overrides: dict[int, list[str]] = {}
+
+        # A stream plays into one sink, so one routed to several outputs gets a
+        # hub of its own, fed out the same way as the session's.
+        self.hubs: dict[int, VirtualSink] = {}
 
         self.master_volume = 50
 
@@ -101,6 +106,7 @@ class Controller(GObject.Object):
                 self.stop_sharing()
             except Exception as e:
                 log.error("Failed to stop sharing during shutdown: %s", e)
+        self._drop_hubs()
         self.monitor.stop()
 
     def clean_orphans(self) -> None:
@@ -190,6 +196,7 @@ class Controller(GObject.Object):
                 self.backend.set_volume(target, volume)
             except Exception as e:
                 log.error("Failed to set master volume on %s: %s", target, e)
+        self._level_apps(volume)
 
     def _solo(self) -> AudioDevice | None:
         """The one output the session is feeding, when there is only one."""
@@ -211,6 +218,15 @@ class Controller(GObject.Object):
             self.backend.set_volume(sink, self._hub_level(devices))
         except Exception as e:
             log.warning("Failed to set the level on %s: %s", sink, e)
+        self._level_apps(self._hub_level(devices))
+
+    def _level_apps(self, level: int) -> None:
+        """App hubs sit where the session hub does, or master stops meaning anything for them."""
+        for hub in self.hubs.values():
+            try:
+                self.backend.set_volume(hub.name, level)
+            except Exception as e:
+                log.warning("Failed to set the level on %s: %s", hub.name, e)
 
     def _hub_level(self, devices: list[AudioDevice]) -> int:
         """100 when a lone output carries the level itself, else the master."""
@@ -317,12 +333,63 @@ class Controller(GObject.Object):
         """Record who the session is for, now that the routing matches."""
         self.session.devices = devices
         self.targets = {d.id for d in devices if d.kind == DeviceKind.BLUETOOTH}
+        # The page reads who is in the session off each device.
+        self.emit("devices-changed", list(self.devices.values()))
         self._set_state(SessionState.ACTIVE)
 
-    def route_stream(self, stream_id: int, target: str) -> None:
-        self.backend.move_stream(stream_id, target)
-        self.overrides[stream_id] = target
-        log.info("Manual route: stream %d → %s", stream_id, target)
+    @locked
+    def streams(self) -> list[dict]:
+        """What is playing, each with the devices it was pinned to (None: following)."""
+        live = self.backend.list_streams()
+        ids = {s["id"] for s in live}
+        for sid in [s for s in self.hubs if s not in ids]:
+            self.backend.destroy_sink(self.hubs.pop(sid))
+        for sid in [s for s in self.overrides if s not in ids]:
+            del self.overrides[sid]
+        return [{**s, "devices": self.overrides.get(s["id"])} for s in live]
+
+    @locked
+    def route_stream(self, stream_id: int, ids: list[str] | None) -> None:
+        """Pin a stream to these devices, or hand it back to the session with None."""
+        devs = [d for d in (self.devices.get(i) for i in ids or []) if d and d.sink]
+        hub = self.hubs.get(stream_id)
+
+        if len(devs) > 1:
+            if hub:
+                self.backend.set_legs(hub, devs)
+            else:
+                hub = self.backend.create_sink(devs)
+                try:
+                    # A new null sink starts at 100%; level it before any audio lands.
+                    self.backend.set_volume(hub.name, self._hub_level(self.session.devices))
+                    self.backend.move_stream(stream_id, hub.name)
+                except Exception:
+                    self.backend.destroy_sink(hub)
+                    raise
+                self.hubs[stream_id] = hub
+        else:
+            target = devs[0].sink if devs else self.active_sink() or self.backend.get_default()
+            # Moved before its old hub goes, or it falls to the default for a beat.
+            self.backend.move_stream(stream_id, target)
+            if hub:
+                self.backend.destroy_sink(self.hubs.pop(stream_id))
+
+        if devs:
+            self.overrides[stream_id] = [d.id for d in devs]
+        else:
+            self.overrides.pop(stream_id, None)
+        log.info("Manual route: stream %d → %s", stream_id, [d.name for d in devs] or "session")
+
+    @locked
+    def _sync_hubs(self) -> None:
+        """Point each app hub at whichever of its picked devices are connected."""
+        for sid, hub in self.hubs.items():
+            picked = (self.devices.get(i) for i in self.overrides.get(sid, []))
+            self.backend.set_legs(hub, [d for d in picked if d and d.connected and d.sink])
+
+    def _drop_hubs(self) -> None:
+        for sid in list(self.hubs):
+            self.backend.destroy_sink(self.hubs.pop(sid))
 
     @locked
     def stop_sharing(self) -> None:
@@ -336,11 +403,13 @@ class Controller(GObject.Object):
 
             if self.session.sink:
                 self.backend.destroy_sink(self.session.sink)
+            self._drop_hubs()
 
             self.session.sink = None
             self.session.devices = []
             self.targets.clear()
             self.overrides.clear()
+            self.emit("devices-changed", list(self.devices.values()))
             self._set_state(SessionState.IDLE)
         except Exception as e:
             log.error("Error while stopping session: %s", e)
@@ -385,6 +454,7 @@ class Controller(GObject.Object):
             self.devices[mac].connected = True
             self.devices[mac].sink = sink
             self.emit("devices-changed", list(self.devices.values()))
+        self._sync_hubs()
 
         # Not gated on REPAIRING: a device that drops while the others carry on
         # leaves the session active, and it still has to be let back in.
@@ -397,14 +467,16 @@ class Controller(GObject.Object):
         log.info("Bluetooth disconnected: %s", mac)
 
         dev = self.devices.get(mac)
-        lost_sink = dev.sink if dev else None
         if dev:
             dev.connected = False
             dev.sink = None
         self.emit("devices-changed", list(self.devices.values()))
 
-        for sid in [s for s, sink in self.overrides.items() if sink == lost_sink]:
+        # PipeWire moves a stream off a sink that vanished, so one pinned to
+        # just this device is back to following the session.
+        for sid in [s for s, ids in self.overrides.items() if ids == [mac]]:
             del self.overrides[sid]
+        self._sync_hubs()
 
         if not (self.session.is_active and mac in self.targets):
             return
