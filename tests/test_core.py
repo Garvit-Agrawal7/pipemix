@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pipemix.linux.models import AudioDevice, DeviceKind, VirtualSink, path_to_mac, sink_to_mac
-from pipemix.linux.services.backend.pactl_backend import _kind, _parse_inputs, _parse_sinks
+from pipemix.linux.services.backend.pactl_backend import _event_kind, _kind, _parse_inputs, _parse_sinks
 from pipemix.linux.services.config.config_manager import ConfigManager
 
 SINKS = """Sink #46
@@ -66,6 +66,15 @@ def test_parse_sinks() -> None:
     assert sinks[0]["props"]["device.bus"] == "bluetooth"
     # Orphan recovery needs the module id to unload the right module.
     assert sinks[1]["module"] == 536870913
+
+
+def test_event_kind() -> None:
+    # A pactl call we made ourselves shows up as a client event — must be ignored,
+    # or watch() would retrigger itself forever.
+    assert _event_kind("Event 'new' on client #9484") is None
+    assert _event_kind("Event 'new' on sink-input #5") == "streams"
+    assert _event_kind("Event 'remove' on sink #3") == "sinks"
+    assert _event_kind("Event 'change' on sink #3") is None  # volume, not hotplug
 
 
 def test_parse_inputs() -> None:

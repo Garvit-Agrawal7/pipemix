@@ -1,7 +1,7 @@
 """
 PipeMix — Controller signals to the web page.
 
-Three signals, one direction. Everything the other way goes through Api.
+Four signals, one direction. Everything the other way goes through Api.
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ class Bridge:
         controller.connect("devices-changed", self._on_devices)
         controller.connect("state-changed", self._on_state)
         controller.connect("health-changed", self._on_health)
+        controller.connect("streams-changed", self._on_streams)
 
     def attach(self, window) -> None:
         self.window = window
@@ -89,3 +90,6 @@ class Bridge:
 
     def _on_health(self, _controller, status) -> None:
         self._push("health", to_json(status))
+
+    def _on_streams(self, _controller, streams) -> None:
+        self._push("streams", streams)

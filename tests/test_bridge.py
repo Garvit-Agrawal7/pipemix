@@ -24,6 +24,7 @@ class FakeController(GObject.Object):
         "state-changed":   (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "devices-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "health-changed":  (GObject.SignalFlags.RUN_FIRST, None, (object,)),
+        "streams-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
     }
 
 

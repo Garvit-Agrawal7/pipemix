@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import queue
 import re
 import threading
 import time
@@ -34,9 +35,13 @@ log = logging.getLogger(__name__)
 SINK_TRIES = 20
 SINK_WAIT_MS = 250
 
+# How long to let a burst of pactl events settle before reacting once. A
+# session starting or a device plugging in fires several events back to back.
+PW_SETTLE_MS = 100
+
 
 def locked(fn):
-    """Serialize routing: the page calls in on one thread, BlueZ on another."""
+    """Serialize routing: the page calls in on one thread, background events on another."""
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
         with self._lock:
@@ -50,6 +55,7 @@ class Controller(GObject.Object):
         "state-changed":   (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "devices-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "health-changed":  (GObject.SignalFlags.RUN_FIRST, None, (object,)),
+        "streams-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
     }
 
     def __init__(self, backend: PactlBackend, config: ConfigManager | None = None) -> None:
@@ -58,9 +64,15 @@ class Controller(GObject.Object):
         self.config = config or ConfigManager()
 
         self.monitor = DeviceMonitor()
-        self.monitor.on_connect = self._on_connect
-        self.monitor.on_disconnect = self._on_disconnect
-        self.monitor.on_property = self._on_property
+        self.monitor.on_connect = lambda mac: self._bg(self._on_connect, mac)
+        self.monitor.on_disconnect = lambda mac: self._bg(self._on_disconnect, mac)
+        self.monitor.on_property = lambda mac, key, value: self._bg(self._on_property, mac, key, value)
+
+        # Background jobs (BlueZ events, pactl-subscribe events) land here and
+        # run in order on the pipemix-events thread, off the GTK main loop.
+        self._jobs: queue.SimpleQueue = queue.SimpleQueue()
+        # Event kinds seen since the last _pw_changed — worker-thread only, no lock.
+        self._pending: set[str] = set()
 
         self.session = SharingSession()
         self.devices: dict[str, AudioDevice] = {}
@@ -79,8 +91,9 @@ class Controller(GObject.Object):
 
         self.master_volume = 50
 
-        # The page calls in on pywebview's thread while BlueZ events land on the
-        # GTK main thread, and both change which outputs the hub feeds.
+        # The page calls in on pywebview's thread while BlueZ and PipeWire
+        # events land on the pipemix-events worker, and both change which
+        # outputs the hub feeds.
         self._lock = threading.RLock()
 
     # ---------- Startup / shutdown ----------
@@ -98,7 +111,12 @@ class Controller(GObject.Object):
         except Exception as e:
             log.error("Failed to start Bluetooth monitor: %s", e)
 
+        threading.Thread(target=self._work, name="pipemix-events", daemon=True).start()
         self.refresh()
+        threading.Thread(
+            target=self.backend.watch, args=(lambda kind: self._bg(self._mark, kind),),
+            name="pipemix-watch", daemon=True,
+        ).start()
 
     def stop(self) -> None:
         if self.session.is_active:
@@ -114,6 +132,22 @@ class Controller(GObject.Object):
             self.backend.move_streams(default)
         self._drop_hubs()
         self.monitor.stop()
+        self.backend.unwatch()  # no pactl subscribe child may outlive the app
+
+    # ---------- Background worker ----------
+
+    def _bg(self, fn, *args) -> None:
+        """Queue a job for the pipemix-events thread. Returns None, so it also
+        works as a one-shot GLib.timeout_add callback."""
+        self._jobs.put((fn, args))
+
+    def _work(self) -> None:
+        while True:
+            fn, args = self._jobs.get()
+            try:
+                fn(*args)
+            except Exception:
+                log.exception("Background job failed: %s", fn)
 
     def clean_orphans(self) -> None:
         """Destroy virtual sinks left behind by a previous crash."""
@@ -241,6 +275,34 @@ class Controller(GObject.Object):
     def active_sink(self) -> str | None:
         """Whatever the session is currently playing through."""
         return self.session.sink.name if self.session.sink else None
+
+    # ---------- PipeWire events ----------
+
+    def _mark(self, kind: str) -> None:
+        """Runs on the worker. Coalesces a burst of events into one _pw_changed."""
+        if not self._pending:
+            GLib.timeout_add(PW_SETTLE_MS, self._bg, self._pw_changed)
+        self._pending.add(kind)
+
+    def _pw_changed(self) -> None:
+        kinds, self._pending = self._pending, set()
+        if "sinks" in kinds:
+            self._hotplug()
+        if "streams" in kinds:
+            # @locked, so this waits behind an in-flight route_stream instead
+            # of racing it — and it also sweeps out any app hub whose stream ended.
+            self.emit("streams-changed", self.streams())
+
+    def _hotplug(self) -> None:
+        """A wired output showed up or left; Bluetooth churn is BlueZ's job, not ours."""
+        try:
+            wired = {d.id for d in self.backend.list_outputs() if d.kind != DeviceKind.BLUETOOTH}
+        except Exception as e:
+            log.error("Failed to check for hotplug: %s", e)
+            return
+        known = {i for i, d in self.devices.items() if d.kind != DeviceKind.BLUETOOTH}
+        if wired != known:
+            self.refresh()
 
     # ---------- Presets ----------
 
@@ -434,24 +496,26 @@ class Controller(GObject.Object):
         # PipeWire creates the sink a moment after BlueZ reports the connection.
         self._resolve_retry(mac, tries=SINK_TRIES)
 
-    def _resolve_retry(self, mac: str, tries: int) -> bool:
+    def _resolve_retry(self, mac: str, tries: int) -> None:
         # The window is long enough that a disconnect can land mid-chain, and a
         # late success would mark a device that is already gone as connected.
         dev = self.devices.get(mac)
         if dev and not dev.connected:
-            return GLib.SOURCE_REMOVE
+            return
 
         sink = self.backend.resolve_bt_sink(mac)
 
         if not sink:
             if tries > 0:
-                GLib.timeout_add(SINK_WAIT_MS, self._resolve_retry, mac, tries - 1)
+                # The wait happens on the main loop; the retry itself runs on
+                # the worker, so it never blocks other events.
+                GLib.timeout_add(SINK_WAIT_MS, self._bg, self._resolve_retry, mac, tries - 1)
             else:
                 log.warning(
                     "No sink for %s after %.1fs — it will appear on the next refresh.",
                     mac, SINK_TRIES * SINK_WAIT_MS / 1000,
                 )
-            return GLib.SOURCE_REMOVE
+            return
 
         log.info("Resolved sink for %s: %s", mac, sink)
         if mac not in self.devices:
@@ -466,7 +530,6 @@ class Controller(GObject.Object):
         # leaves the session active, and it still has to be let back in.
         if mac in self.targets:
             self._rebuild()
-        return GLib.SOURCE_REMOVE
 
     @locked
     def _on_disconnect(self, mac: str) -> None:

@@ -6,6 +6,7 @@ import type {
   Preset,
   SessionState,
   Snapshot,
+  Stream,
 } from "./types";
 import { IconApps, IconClose, IconMenu, IconOutputs, IconPower } from "./icons";
 import Outputs from "./Outputs";
@@ -22,7 +23,7 @@ export default function App() {
   const [presets, setPresets] = useState<Preset[]>([]);
   const [preset, setPreset] = useState<string | null>(null);
   const [sink, setSink] = useState<string | null>(null);
-  const [streamCount, setStreamCount] = useState(0);
+  const [streams, setStreams] = useState<Stream[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [quitting, setQuitting] = useState(false);
@@ -62,6 +63,8 @@ export default function App() {
           );
         } else if (event === "health") {
           setHealth(payload as BackendStatus);
+        } else if (event === "streams") {
+          setStreams(payload as Stream[]);
         }
       },
     };
@@ -83,6 +86,9 @@ export default function App() {
         })
         .catch((e) => setError(msg(e)))
         .finally(() => setReady(true));
+      call<Stream[]>("list_streams")
+        .then(setStreams)
+        .catch((e) => setError(msg(e)));
     });
   }, []);
 
@@ -113,14 +119,14 @@ export default function App() {
 
         <button
           className={screen === "apps" ? "railbtn on" : "railbtn"}
-          aria-label={streamCount > 0 ? `Apps, ${streamCount} playing` : "Apps"}
+          aria-label={streams.length > 0 ? `Apps, ${streams.length} playing` : "Apps"}
           aria-current={screen === "apps" ? "page" : undefined}
           title="Apps"
           onClick={() => setScreen("apps")}
         >
           <IconApps />
           <span className="rlabel">Apps</span>
-          {streamCount > 0 && <span className="badge">{streamCount}</span>}
+          {streams.length > 0 && <span className="badge">{streams.length}</span>}
         </button>
 
         <div className="spacer" />
@@ -190,8 +196,9 @@ export default function App() {
               sink={sink}
               state={state}
               master={master}
+              streams={streams}
               onMaster={setMaster}
-              onCount={setStreamCount}
+              onStreams={setStreams}
               onError={setError}
             />
           ))}

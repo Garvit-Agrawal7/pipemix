@@ -42,6 +42,7 @@ sys.modules.setdefault("gi.repository", _gi_mock.repository)
 from pipemix.linux.models import AudioDevice, DeviceKind, SessionState, VirtualSink
 from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
 from pipemix.linux.services.config.config_manager import ConfigManager
+import pipemix.linux.controller as controller_module
 from pipemix.linux.controller import Controller
 
 
@@ -379,6 +380,29 @@ def test_refresh_keeps_session(tmp_path: Path) -> None:
     assert ctrl.targets == {dev.id}
 
 
+# -- Hotplug: react to a wired output appearing, ignore Bluetooth churn --
+
+def test_hotplug_ignores_unchanged_wired_set(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    ctrl.monitor.connected.reset_mock()
+
+    ctrl._hotplug()  # list_outputs() still returns [], same as at start()
+
+    ctrl.monitor.connected.assert_not_called()  # refresh() never ran
+
+
+def test_hotplug_refreshes_on_a_new_wired_output(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    usb = _dev("usb1", sink="alsa_usb", kind=DeviceKind.USB)
+    ctrl.backend.list_outputs.return_value = [usb]
+    ctrl.monitor.connected.reset_mock()
+
+    ctrl._hotplug()
+
+    ctrl.monitor.connected.assert_called_once()  # refresh() ran
+    assert usb.id in ctrl.devices
+
+
 if __name__ == "__main__":
     import tempfile
 
@@ -423,3 +447,17 @@ def test_disconnect_drops_one_leg(tmp_path: Path) -> None:
     ctrl.backend.destroy_sink.assert_not_called()
     ctrl.backend.set_legs.assert_called_with(hub, [d1])
     assert ctrl.session.state == SessionState.ACTIVE
+
+
+# -- _mark coalesces a burst of pactl events into one _pw_changed --
+
+def test_mark_coalesces_a_burst(tmp_path: Path, monkeypatch) -> None:
+    ctrl = _ctrl(tmp_path)
+    fake_glib = MagicMock()
+    monkeypatch.setattr(controller_module, "GLib", fake_glib)
+
+    ctrl._mark("streams")
+    ctrl._mark("sinks")
+
+    fake_glib.timeout_add.assert_called_once()
+    assert ctrl._pending == {"streams", "sinks"}

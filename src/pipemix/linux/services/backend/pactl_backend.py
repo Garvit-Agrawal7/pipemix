@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import time
+from typing import Callable
 
 from pipemix.linux.models import AudioDevice, DeviceKind, VirtualSink, sink_to_mac
 from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
@@ -56,6 +58,21 @@ def _kind(sink: str) -> DeviceKind:
     if "usb" in name:
         return DeviceKind.USB
     return DeviceKind.BUILTIN
+
+
+def _event_kind(line: str) -> str | None:
+    """
+    Classify one `pactl subscribe` line, or None to ignore it.
+
+    Every pactl call this app makes shows up here too, as a client event —
+    ignored, or watch() would retrigger itself forever. Sink volume changes
+    are also ignored; only a sink appearing or disappearing means hotplug.
+    """
+    if " on sink-input #" in line:
+        return "streams"
+    if " on sink #" in line and "'change'" not in line:
+        return "sinks"
+    return None
 
 
 def _parse_sinks(output: str) -> list[dict]:
@@ -128,6 +145,37 @@ def _parse_inputs(output: str) -> list[dict]:
 
 
 class PactlBackend:
+
+    def __init__(self) -> None:
+        # Set here, not in watch(): a stop() that lands before the watch
+        # thread starts must still keep it from running.
+        self._stopped = False
+        self._proc: subprocess.Popen | None = None
+
+    def watch(self, on_change: Callable[[str], None]) -> None:
+        """Blocks, running `pactl subscribe` and reporting each classified line."""
+        while not self._stopped:
+            try:
+                self._proc = subprocess.Popen(
+                    ["pactl", "subscribe"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                )
+            except FileNotFoundError:
+                return
+            for line in self._proc.stdout:
+                kind = _event_kind(line)
+                if kind:
+                    on_change(kind)
+            if self._stopped:
+                return
+            log.warning("pactl subscribe exited — restarting.")
+            time.sleep(1)
+            on_change("sinks")
+            on_change("streams")  # catch up on anything missed while it was down
+
+    def unwatch(self) -> None:
+        self._stopped = True
+        if self._proc:
+            self._proc.terminate()
 
     def health(self) -> BackendStatus:
         """Never raises."""
