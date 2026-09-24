@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -42,7 +42,9 @@ sys.modules.setdefault("gi.repository", _gi_mock.repository)
 from pipemix.models import AudioDevice, DeviceKind, SessionState, VirtualSink
 from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
 from pipemix.linux.services.config.config_manager import ConfigManager
+import pipemix.linux.controller as controller_module
 from pipemix.linux.controller import Controller
+from pipemix.linux.ui.api import Api
 
 
 def _dev(mac: str, name: str = "Dev", sink: str | None = None, kind=DeviceKind.BLUETOOTH) -> AudioDevice:
@@ -54,9 +56,7 @@ def _backend() -> MagicMock:
     b.health.return_value = BackendStatus(BackendHealth.OK, "ok")
     b.find_orphans.return_value = []
     b.list_outputs.return_value = []
-    b.resolve_bt_sinks.return_value = {}
     b.list_streams.return_value = []
-    b.get_volume.return_value = 50
     b.create_sink.side_effect = _fake_create
     return b
 
@@ -75,6 +75,7 @@ def _ctrl(tmp_path: Path, backend=None) -> Controller:
     # Bypass BlueZ D-Bus monitor — it needs a real system bus.
     c.monitor = MagicMock()
     c.monitor.connected.return_value = []
+    c._bg = lambda fn, *a: fn(*a)   # run volume sends inline, so existing sync asserts hold
     c.start()
     return c
 
@@ -131,6 +132,44 @@ def test_stop_destroys_virtual_sink(tmp_path: Path) -> None:
     ctrl.backend.destroy_sink.assert_called_with(sink)
 
 
+def test_shutdown_hands_streams_back_to_default(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    b = ctrl.backend
+    b.get_default.return_value = "sink_default"
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.route_stream(42, [d1.id, d2.id])
+    ctrl.route_stream(43, [d1.id])
+    hub = ctrl.hubs[42]
+
+    ctrl.stop()
+
+    names = [c[0] for c in b.mock_calls]
+    b.move_streams.assert_called_once_with("sink_default")
+    assert names.index("move_streams") < names.index("destroy_sink")
+    b.destroy_sink.assert_called_with(hub)
+
+
+def test_stop_sharing_moves_streams_before_hubs_go(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    b = ctrl.backend
+    b.get_default.return_value = "original_sink"
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.start_sharing([d1, d2])
+    ctrl.route_stream(42, [d1.id, d2.id])
+    ctrl.route_stream(43, [d1.id])
+    b.reset_mock()
+
+    ctrl.stop_sharing()
+
+    names = [c[0] for c in b.mock_calls]
+    b.move_streams.assert_called_once_with("original_sink", exclude=[43])
+    assert names.index("move_streams") < names.index("destroy_sink")
+
+
 # -- Empty device list is a no-op --
 
 def test_start_with_no_devices_is_noop(tmp_path: Path) -> None:
@@ -151,6 +190,23 @@ def test_single_device_without_sink_raises(tmp_path: Path) -> None:
         assert False, "Should have raised"
     except BackendError:
         pass
+    assert ctrl.session.state == SessionState.IDLE
+
+
+def test_failed_start_tears_down_the_hub(tmp_path: Path) -> None:
+    """The hub exists before the default switches, so a failure there must not leak it."""
+    ctrl = _ctrl(tmp_path)
+    ctrl.backend.set_default.side_effect = BackendError("no such sink")
+    dev = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    try:
+        ctrl.start_sharing([dev])
+        assert False, "Should have raised"
+    except BackendError:
+        pass
+
+    ctrl.backend.destroy_sink.assert_called_once()
+    assert ctrl.backend.destroy_sink.call_args.args[0].name.startswith("pipemix_")
+    assert ctrl.session.sink is None
     assert ctrl.session.state == SessionState.IDLE
 
 
@@ -223,14 +279,88 @@ def test_hub_steps_aside_for_one_output(tmp_path: Path) -> None:
     ctrl.backend.set_volume.assert_any_call(ctrl.session.sink.name, 40)
 
 
+# -- The page learns who is in the session from the device push --
+
+def test_sharing_repushes_devices(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    ctrl.emit = MagicMock()
+    pushed = lambda: [c.args[0] for c in ctrl.emit.call_args_list].count("devices-changed")
+
+    ctrl.start_sharing([_dev("AA:BB:CC:DD:EE:01", sink="sink_a")])
+    assert pushed() == 1
+    ctrl.stop_sharing()
+    assert pushed() == 2
+
+
 # -- Stream routing override --
 
 def test_route_stream_records_override(tmp_path: Path) -> None:
     ctrl = _ctrl(tmp_path)
-    ctrl.route_stream(42, "sink_x")
+    d = _dev("AA:BB:CC:DD:EE:01", sink="sink_x")
+    ctrl.devices = {d.id: d}
+    ctrl.route_stream(42, [d.id])
 
-    assert ctrl.overrides[42] == "sink_x"
+    assert ctrl.overrides[42] == [d.id]
     ctrl.backend.move_stream.assert_called_with(42, "sink_x")
+    ctrl.backend.create_sink.assert_not_called()
+
+
+def test_route_stream_to_several_gets_its_own_hub(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    d3 = _dev("AA:BB:CC:DD:EE:03", sink="sink_c")
+    ctrl.devices = {d.id: d for d in (d1, d2, d3)}
+    b = ctrl.backend
+
+    ctrl.route_stream(42, [d1.id, d2.id])
+    hub = ctrl.hubs[42]
+    b.move_stream.assert_called_with(42, hub.name)
+
+    ctrl.route_stream(42, [d1.id, d3.id])     # a toggle moves a leg, not the hub
+    assert ctrl.hubs[42] is hub
+    b.set_legs.assert_called_with(hub, [d1, d3])
+    assert b.create_sink.call_count == 1
+
+    b.get_default.return_value = "sink_default"
+    ctrl.route_stream(42, None)               # back to the session
+    b.move_stream.assert_called_with(42, "sink_default")
+    b.destroy_sink.assert_called_with(hub)
+    assert 42 not in ctrl.hubs and 42 not in ctrl.overrides
+
+
+def test_app_hub_follows_master(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.start_sharing([d1, d2])
+    ctrl.set_master_volume(30)
+
+    ctrl.route_stream(42, [d1.id, d2.id])
+    hub = ctrl.hubs[42]
+    ctrl.backend.set_volume.assert_called_with(hub.name, 30)   # not left at 100
+
+    ctrl.set_master_volume(70)
+    ctrl.backend.set_volume.assert_called_with(hub.name, 70)
+
+
+def test_app_hub_follows_disconnects_and_ends_with_its_stream(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.route_stream(42, [d1.id, d2.id])
+    hub = ctrl.hubs[42]
+
+    ctrl._on_disconnect(d2.id)
+    ctrl.backend.set_legs.assert_called_with(hub, [d1])
+    assert ctrl.overrides[42] == [d1.id, d2.id]   # d2 is let back in on reconnect
+
+    ctrl.backend.list_streams.return_value = [{"id": 7, "name": "x", "sink": "s", "mute": False}]
+    assert ctrl.streams() == [{"id": 7, "name": "x", "sink": "s", "mute": False, "devices": None}]
+    ctrl.backend.destroy_sink.assert_called_with(hub)
+    assert not ctrl.hubs and not ctrl.overrides
 
 
 # -- Orphan cleanup --
@@ -286,6 +416,29 @@ def test_refresh_keeps_session(tmp_path: Path) -> None:
     assert ctrl.targets == {dev.id}
 
 
+# -- Hotplug: react to a wired output appearing, ignore Bluetooth churn --
+
+def test_hotplug_ignores_unchanged_wired_set(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    ctrl.monitor.connected.reset_mock()
+
+    ctrl._hotplug()  # list_outputs() still returns [], same as at start()
+
+    ctrl.monitor.connected.assert_not_called()  # refresh() never ran
+
+
+def test_hotplug_refreshes_on_a_new_wired_output(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    usb = _dev("usb1", sink="alsa_usb", kind=DeviceKind.USB)
+    ctrl.backend.list_outputs.return_value = [usb]
+    ctrl.monitor.connected.reset_mock()
+
+    ctrl._hotplug()
+
+    ctrl.monitor.connected.assert_called_once()  # refresh() ran
+    assert usb.id in ctrl.devices
+
+
 if __name__ == "__main__":
     import tempfile
 
@@ -330,3 +483,159 @@ def test_disconnect_drops_one_leg(tmp_path: Path) -> None:
     ctrl.backend.destroy_sink.assert_not_called()
     ctrl.backend.set_legs.assert_called_with(hub, [d1])
     assert ctrl.session.state == SessionState.ACTIVE
+
+
+def test_wired_output_drops_and_restores_its_leg(tmp_path: Path) -> None:
+    """No BlueZ event for a wired output, so the hotplug check drops and restores its leg."""
+    ctrl = _ctrl(tmp_path)
+    u1 = _dev("alsa_usb", sink="alsa_usb", kind=DeviceKind.USB)
+    u2 = _dev("alsa_hdmi", sink="alsa_hdmi", kind=DeviceKind.HDMI)
+    u2.volume = 30
+    ctrl.devices = {u1.id: u1, u2.id: u2}
+    ctrl.start_sharing([u1, u2])
+    hub = ctrl.session.sink
+    ctrl.backend.list_outputs.return_value = [u1]
+
+    ctrl._hotplug()
+
+    ctrl.backend.destroy_sink.assert_not_called()
+    ctrl.backend.set_legs.assert_called_with(hub, [u1])
+    assert ctrl.session.devices == [u1]
+    assert ctrl.session.state == SessionState.ACTIVE
+    # Still listed, offline, like a dropped Bluetooth device.
+    assert not ctrl.devices[u2.id].connected and u2.id in ctrl.targets
+
+    # The offline entry must not look like a fresh unplug on every event.
+    ctrl.monitor.connected.reset_mock()
+    ctrl._hotplug()
+    ctrl.monitor.connected.assert_not_called()
+
+    # Plugged back in: it comes back as a new object, at its own level.
+    ctrl.backend.list_outputs.return_value = [u1, _dev(u2.id, sink="alsa_hdmi", kind=DeviceKind.HDMI)]
+
+    ctrl._hotplug()
+
+    ctrl.backend.destroy_sink.assert_not_called()
+    assert {d.id for d in ctrl.session.devices} == {u1.id, u2.id}
+    assert set(ctrl.backend.set_legs.call_args.args[1]) == {u1, u2}
+    assert ctrl.devices[u2.id].connected and ctrl.devices[u2.id].volume == 30
+
+
+def test_lone_wired_output_waits_to_reconnect(tmp_path: Path) -> None:
+    """Pulled out with nothing else playing: repairing, which the page shows as reconnecting."""
+    ctrl = _ctrl(tmp_path)
+    u = _dev("alsa_usb", sink="alsa_usb", kind=DeviceKind.USB)
+    ctrl.devices = {u.id: u}
+    ctrl.start_sharing([u])
+    hub = ctrl.session.sink
+    ctrl.backend.list_outputs.return_value = []
+
+    ctrl._hotplug()
+
+    assert ctrl.session.state == SessionState.REPAIRING
+    assert ctrl.session.sink is hub
+    assert not ctrl.devices[u.id].connected and u.id in ctrl.targets
+
+    ctrl.backend.list_outputs.return_value = [_dev(u.id, sink="alsa_usb", kind=DeviceKind.USB)]
+
+    ctrl._hotplug()
+
+    assert ctrl.session.state == SessionState.ACTIVE
+    assert [d.id for d in ctrl.session.devices] == [u.id]
+
+
+# -- _mark coalesces a burst of pactl events into one _pw_changed --
+
+def test_mark_coalesces_a_burst(tmp_path: Path, monkeypatch) -> None:
+    ctrl = _ctrl(tmp_path)
+    fake_glib = MagicMock()
+    monkeypatch.setattr(controller_module, "GLib", fake_glib)
+
+    ctrl._mark("streams")
+    ctrl._mark("sinks")
+
+    fake_glib.timeout_add.assert_called_once()
+    assert ctrl._pending == {"streams", "sinks"}
+
+
+def test_output_is_ticked_again_when_it_rejoins(tmp_path: Path) -> None:
+    """Unplugging unticks it; the session taking it back on replug must tick it again."""
+    ctrl = _ctrl(tmp_path)
+    api = Api(ctrl)
+    u = _dev("alsa_usb", sink="alsa_usb", kind=DeviceKind.USB)
+    ctrl.devices = {u.id: u}
+    api.toggle_device(u.id, True)
+    api.start_sharing()
+    ctrl.backend.list_outputs.return_value = []
+
+    ctrl._hotplug()
+
+    assert not api._devices_payload()[0]["selected"]
+
+    ctrl.backend.list_outputs.return_value = [_dev(u.id, sink="alsa_usb", kind=DeviceKind.USB)]
+
+    ctrl._hotplug()
+
+    assert api._devices_payload()[0]["selected"]
+
+
+# -- Toggling in a 4th output must not re-touch the three already joined --
+
+def test_toggle_fourth_output_sends_minimal_pactl(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    d3 = _dev("AA:BB:CC:DD:EE:03", sink="sink_c")
+    d4 = _dev("AA:BB:CC:DD:EE:04", sink="sink_d")
+    ctrl.start_sharing([d1, d2, d3])
+    hub = ctrl.session.sink.name
+    ctrl.backend.set_mute.reset_mock()
+    ctrl.backend.set_volume.reset_mock()
+
+    ctrl.start_sharing([d1, d2, d3, d4])
+
+    ctrl.backend.set_mute.assert_called_once_with(d4.sink, False)
+    assert ctrl.backend.set_volume.call_args_list == [call(d4.sink, d4.volume), call(hub, 50)]
+
+
+# -- A drag sends only the latest tick --
+
+def test_volume_ticks_latest_wins(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    dev = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    ctrl.devices[dev.id] = dev
+    jobs = []
+    ctrl._bg = lambda fn, *a: jobs.append((fn, a))
+
+    ctrl.set_device_volume(dev.id, 10, unmute=True)
+    ctrl.set_device_volume(dev.id, 20)
+    ctrl.set_device_volume(dev.id, 30)
+    assert len(jobs) == 1
+
+    for fn, args in jobs:
+        fn(*args)
+
+    ctrl.backend.set_mute.assert_called_once_with(dev.sink, False)
+    ctrl.backend.set_volume.assert_called_once_with(dev.sink, 30)
+
+
+# -- A stale queued tick must not undo a routing change that landed after it --
+
+def test_stale_tick_cannot_undo_routing(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.start_sharing([d1, d2])
+    hub = ctrl.session.sink.name
+    jobs = []
+    ctrl._bg = lambda fn, *a: jobs.append((fn, a))
+
+    ctrl.set_master_volume(30)   # queues a hub tick, not sent yet
+    ctrl.start_sharing([d1])     # 2 -> 1: hub must land on 100
+
+    for fn, args in jobs:
+        fn(*args)
+
+    hub_calls = [c.args for c in ctrl.backend.set_volume.call_args_list if c.args[0] == hub]
+    assert hub_calls[-1] == (hub, 100)

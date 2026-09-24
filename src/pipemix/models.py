@@ -79,10 +79,18 @@ class AudioDevice:
 
 @dataclass
 class VirtualSink:
-    """The hub sink we created. module unloads it; legs are its per-output loopbacks."""
-    module: int
-    name:   str
-    legs:   dict[str, int] = field(default_factory=dict)
+    """
+    The hub sink we created. module unloads it; legs are its per-output loopbacks.
+
+    delays is the latency_msec each leg was loaded with, so set_legs can skip a
+    leg that hasn't changed. slowest is the high-water mark (ns) of every
+    device latency seen this session, used to align new legs with it.
+    """
+    module:  int
+    name:    str
+    legs:    dict[str, int] = field(default_factory=dict)
+    delays:  dict[str, int] = field(default_factory=dict)
+    slowest: int = 0
 
     @staticmethod
     def make_name() -> str:

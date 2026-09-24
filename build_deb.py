@@ -50,8 +50,10 @@ def main():
         shutil.copy(logo_src, pkg_dir / "usr" / "share" / "icons" / "hicolor" / "512x512" / "apps" / "pipemix.png")
 
     # pipewire-pulse, not pulseaudio-utils alone: plain PulseAudio satisfies
-    # pactl but the app refuses to run on it. The gir1.2-* packages are
-    # pywebview's GTK backend, which python3-webview does not pull in.
+    # pactl but the app refuses to run on it. pipewire-bin (pw-dump) is already
+    # pulled in through pipewire-pulse, but the app now runs it directly. The
+    # gir1.2-* packages are pywebview's GTK backend, which python3-webview does
+    # not pull in.
     control_content = f"""Package: pipemix
 Version: {version}
 Section: sound
@@ -60,7 +62,7 @@ Architecture: all
 Maintainer: {MAINTAINER}
 Uploaders: {UPLOADERS}
 Depends: python3 (>= 3.12), python3-gi, python3-webview, gir1.2-gtk-3.0,
- gir1.2-webkit2-4.1, pipewire-pulse, pulseaudio-utils
+ gir1.2-webkit2-4.1, pipewire-pulse, pipewire-bin, pulseaudio-utils
 Description: Route audio to several outputs at once
  PipeMix plays the same audio through any number of PipeWire sinks --
  Bluetooth, USB, HDMI or built-in -- with a volume fader for each one,
@@ -69,10 +71,10 @@ Description: Route audio to several outputs at once
     with open(pkg_dir / "DEBIAN" / "control", "w", encoding="utf-8") as f:
         f.write(control_content)
 
-    # PYTHONPATH so `import pipemix.app` resolves from the installed tree
+    # PYTHONPATH so `import pipemix.linux.app` resolves from the installed tree
     launcher_content = """#!/bin/bash
 export PYTHONPATH="/usr/share/pipemix/src:$PYTHONPATH"
-exec python3 /usr/share/pipemix/src/pipemix/main.py "$@"
+exec python3 /usr/share/pipemix/src/pipemix/linux/main.py "$@"
 """
     launcher_path = pkg_dir / "usr" / "bin" / "pipemix"
     with open(launcher_path, "w", encoding="utf-8") as f:

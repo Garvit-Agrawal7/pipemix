@@ -40,6 +40,7 @@ export interface Stream {
   name: string;
   sink: string;
   mute: boolean;
+  devices: string[] | null; // pinned device ids; null while following the session
 }
 
 export interface Preset {

@@ -105,13 +105,21 @@ button{font:inherit;color:inherit;background:none;border:none;padding:0;margin:0
   *,*::before,*::after{animation-duration:0.01ms !important;transition-duration:0.01ms !important}
 }
 
-/* A native <select> ignores inherited colour under the GTK theme, so it has to
-   be un-themed explicitly or its text renders near-invisible on this palette. */
-select.selbox{appearance:none;-webkit-appearance:none;color:#CFD9DE;background-color:#181F22;
-  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 20 20' fill='none' stroke='%23CFD9DE' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 8 5 5 5-5'/%3E%3C/svg%3E");
-  background-repeat:no-repeat;background-position:right 10px center;padding-right:30px;max-width:230px;
-  text-overflow:ellipsis}
-select.selbox option{background:#161D20;color:#CFD9DE}
+/* An app row opens in place to list its outputs. */
+.lv.xp{height:auto;padding-bottom:6px;border-color:#2A4038;cursor:default}
+.lvhd{height:62px;cursor:pointer}
+.selbtn{max-width:230px;white-space:nowrap}
+.selbtn .t{overflow:hidden;text-overflow:ellipsis}
+.selbtn svg{flex:none;color:#9FB0B7;transition:transform 120ms ease}
+.selbtn[aria-expanded="true"]{border-color:#35463F;background:#1D262A}
+.selbtn[aria-expanded="true"] svg{transform:rotate(180deg)}
+.xrow{position:relative;display:flex;align-items:center;gap:12px;height:42px;padding:0 15px 0 50px}
+.xico{width:17px;height:17px;flex:none;color:#7E8A90;display:flex}
+/* On because "Enable all" is, not because it was picked. */
+.tg.on.soft{background:#579175}
+.tg.on.soft:hover{background:#62A081}
+.hr{position:relative;height:1px;background:#1E272A;margin:0 15px}
+
 
 /* Mockup values the ported classes flattened */
 .st.mlabel{letter-spacing:.17em}
