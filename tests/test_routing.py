@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -56,9 +56,7 @@ def _backend() -> MagicMock:
     b.health.return_value = BackendStatus(BackendHealth.OK, "ok")
     b.find_orphans.return_value = []
     b.list_outputs.return_value = []
-    b.resolve_bt_sinks.return_value = {}
     b.list_streams.return_value = []
-    b.get_volume.return_value = 50
     b.create_sink.side_effect = _fake_create
     return b
 
@@ -77,6 +75,7 @@ def _ctrl(tmp_path: Path, backend=None) -> Controller:
     # Bypass BlueZ D-Bus monitor — it needs a real system bus.
     c.monitor = MagicMock()
     c.monitor.connected.return_value = []
+    c._bg = lambda fn, *a: fn(*a)   # run volume sends inline, so existing sync asserts hold
     c.start()
     return c
 
@@ -542,3 +541,65 @@ def test_output_is_ticked_again_when_it_rejoins(tmp_path: Path) -> None:
     ctrl._hotplug()
 
     assert api._devices_payload()[0]["selected"]
+
+
+# -- Toggling in a 4th output must not re-touch the three already joined --
+
+def test_toggle_fourth_output_sends_minimal_pactl(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    d3 = _dev("AA:BB:CC:DD:EE:03", sink="sink_c")
+    d4 = _dev("AA:BB:CC:DD:EE:04", sink="sink_d")
+    ctrl.start_sharing([d1, d2, d3])
+    hub = ctrl.session.sink.name
+    ctrl.backend.set_mute.reset_mock()
+    ctrl.backend.set_volume.reset_mock()
+
+    ctrl.start_sharing([d1, d2, d3, d4])
+
+    ctrl.backend.set_mute.assert_called_once_with(d4.sink, False)
+    assert ctrl.backend.set_volume.call_args_list == [call(d4.sink, d4.volume), call(hub, 50)]
+
+
+# -- A drag sends only the latest tick --
+
+def test_volume_ticks_latest_wins(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    dev = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    ctrl.devices[dev.id] = dev
+    jobs = []
+    ctrl._bg = lambda fn, *a: jobs.append((fn, a))
+
+    ctrl.set_device_volume(dev.id, 10, unmute=True)
+    ctrl.set_device_volume(dev.id, 20)
+    ctrl.set_device_volume(dev.id, 30)
+    assert len(jobs) == 1
+
+    for fn, args in jobs:
+        fn(*args)
+
+    ctrl.backend.set_mute.assert_called_once_with(dev.sink, False)
+    ctrl.backend.set_volume.assert_called_once_with(dev.sink, 30)
+
+
+# -- A stale queued tick must not undo a routing change that landed after it --
+
+def test_stale_tick_cannot_undo_routing(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.start_sharing([d1, d2])
+    hub = ctrl.session.sink.name
+    jobs = []
+    ctrl._bg = lambda fn, *a: jobs.append((fn, a))
+
+    ctrl.set_master_volume(30)   # queues a hub tick, not sent yet
+    ctrl.start_sharing([d1])     # 2 -> 1: hub must land on 100
+
+    for fn, args in jobs:
+        fn(*args)
+
+    hub_calls = [c.args for c in ctrl.backend.set_volume.call_args_list if c.args[0] == hub]
+    assert hub_calls[-1] == (hub, 100)

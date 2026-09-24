@@ -96,6 +96,13 @@ class Controller(GObject.Object):
         # outputs the hub feeds.
         self._lock = threading.RLock()
 
+        # Levels not yet sent, per sink: (level, unmute). pywebview runs each JS
+        # call on its own thread, so a drag's ticks can overtake each other in
+        # pactl; the worker only ever sends the latest.
+        # ponytail: ticks waiting on _lock behind a routing change can still wake
+        # out of order; stamp them with a sequence number if that ever shows.
+        self._levels: dict[str, tuple[int, bool]] = {}
+
     # ---------- Startup / shutdown ----------
 
     def start(self) -> None:
@@ -164,28 +171,28 @@ class Controller(GObject.Object):
         """Re-enumerate outputs, merging PipeWire state with BlueZ state."""
         self.emit("health-changed", self.backend.health())
         try:
-            bt = self.monitor.connected()
-            sinks = self.backend.resolve_bt_sinks([d["mac"] for d in bt])
+            outs = self.backend.list_outputs()
             found: dict[str, AudioDevice] = {}
 
-            for dev in self.backend.list_outputs():
+            for dev in outs:
                 # Bluetooth is keyed by MAC and rebuilt from BlueZ below.
                 if dev.kind == DeviceKind.BLUETOOTH:
                     continue
                 dev.name = self.config.device_name(dev.id, dev.name)
-                dev.volume = self._volume_of(dev.id, dev.sink)
+                dev.volume = self._volume_of(dev.id, dev.volume)
                 found[dev.id] = dev
 
-            for d in bt:
+            bt = {dev.id: dev for dev in outs if dev.kind == DeviceKind.BLUETOOTH}
+            for d in self.monitor.connected():
                 mac = d["mac"]
-                sink = sinks.get(mac)
+                hit = bt.get(mac)
                 found[mac] = AudioDevice(
                     id=mac,
                     name=self.config.device_name(mac, d["name"]),
-                    sink=sink,
+                    sink=hit.sink if hit else None,
                     kind=DeviceKind.BLUETOOTH,
                     connected=True,
-                    volume=self._volume_of(mac, sink),
+                    volume=self._volume_of(mac, hit.volume if hit else 50),
                 )
 
             # A session output that dropped stays listed, offline, so the page can
@@ -202,18 +209,32 @@ class Controller(GObject.Object):
         except Exception as e:
             log.error("Failed to refresh devices: %s", e)
 
-    def _volume_of(self, dev_id: str, sink: str | None) -> int:
-        """Keep the volume we already know; otherwise ask the sink, else 50%."""
-        if dev_id in self.devices:
-            return self.devices[dev_id].volume
-        if not sink:
-            return 50
-        try:
-            return self.backend.get_volume(sink)
-        except Exception:
-            return 50
+    def _volume_of(self, dev_id: str, fallback: int) -> int:
+        """Keep the volume we already know; otherwise the caller's fallback."""
+        return self.devices[dev_id].volume if dev_id in self.devices else fallback
 
-    def set_device_volume(self, dev_id: str, volume: int) -> None:
+    def _send(self, sink: str, level: int, unmute: bool = False) -> None:
+        """Queue a level for the worker, replacing one still waiting. Callers hold _lock."""
+        first = sink not in self._levels
+        unmute = unmute or self._levels.get(sink, (0, False))[1]
+        self._levels[sink] = (level, unmute)
+        if first:
+            self._bg(self._flush, sink)
+
+    @locked  # or a tick mid-pactl could land after a routing change's direct set
+    def _flush(self, sink: str) -> None:
+        level, unmute = self._levels.pop(sink, (None, False))
+        if level is None:
+            return  # a direct set already replaced it
+        try:
+            if unmute:
+                self.backend.set_mute(sink, False)
+            self.backend.set_volume(sink, level)
+        except Exception as e:
+            log.warning("Failed to set the level on %s: %s", sink, e)
+
+    @locked  # so a routing change can't land between picking the sink and queueing
+    def set_device_volume(self, dev_id: str, volume: int, unmute: bool = False) -> None:
         dev = self.devices.get(dev_id)
         if not dev:
             return
@@ -221,29 +242,23 @@ class Controller(GObject.Object):
         if self._solo() is dev:
             self.master_volume = volume
         if dev.connected and dev.sink:
-            try:
-                self.backend.set_mute(dev.sink, False)
-                self.backend.set_volume(dev.sink, volume)
-            except Exception as e:
-                log.error("Failed to set volume for %s: %s", dev_id, e)
+            self._send(dev.sink, volume, unmute)
 
-    def set_master_volume(self, volume: int) -> None:
+    @locked
+    def set_master_volume(self, volume: int, unmute: bool = False) -> None:
         self.master_volume = volume
 
         solo = self._solo()
         if solo:
             # The hub is transparent for a lone output, so the level belongs on
             # the device — and its row has to move with the master row.
-            self.set_device_volume(solo.id, volume)
+            self.set_device_volume(solo.id, volume, unmute)
             self.emit("devices-changed", list(self.devices.values()))
             return
 
         target = self.active_sink() if self.session.is_active else self.prev_default
         if target:
-            try:
-                self.backend.set_volume(target, volume)
-            except Exception as e:
-                log.error("Failed to set master volume on %s: %s", target, e)
+            self._send(target, volume, unmute)
         self._level_apps(volume)
 
     def _solo(self) -> AudioDevice | None:
@@ -262,19 +277,18 @@ class Controller(GObject.Object):
         solo = devices[0] if len(devices) == 1 else None
         if solo:
             self.master_volume = solo.volume
+        level = self._hub_level(devices)
+        self._levels.pop(sink, None)  # a queued tick must not undo this direct set
         try:
-            self.backend.set_volume(sink, self._hub_level(devices))
+            self.backend.set_volume(sink, level)
         except Exception as e:
             log.warning("Failed to set the level on %s: %s", sink, e)
-        self._level_apps(self._hub_level(devices))
+        self._level_apps(level)
 
     def _level_apps(self, level: int) -> None:
         """App hubs sit where the session hub does, or master stops meaning anything for them."""
         for hub in self.hubs.values():
-            try:
-                self.backend.set_volume(hub.name, level)
-            except Exception as e:
-                log.warning("Failed to set the level on %s: %s", hub.name, e)
+            self._send(hub.name, level)
 
     def _hub_level(self, devices: list[AudioDevice]) -> int:
         """100 when a lone output carries the level itself, else the master."""
@@ -388,22 +402,27 @@ class Controller(GObject.Object):
 
     def _retarget(self, devices: list[AudioDevice]) -> None:
         """Change which outputs the live hub feeds. The hub itself stays put."""
-        self._prepare(devices)
+        sink = self.session.sink
+        # Outputs already fed are already unmuted and at their own level.
+        self._prepare([d for d in devices if d.sink not in sink.legs])
 
         # Going from one output to two, the hub is still at 100 because the lone
         # device was carrying the level. Duck it before the new leg attaches, or
         # that output gets one blast at full volume before the level catches up.
-        if self._hub_level(devices) < self._hub_level(self.session.devices):
-            self._level_hub(self.session.sink.name, devices)
-
-        self.backend.set_legs(self.session.sink, devices)
-        self._level_hub(self.session.sink.name, devices)
+        # Going back to one, it rises only once the other leg has dropped.
+        duck = self._hub_level(devices) < self._hub_level(self.session.devices)
+        if duck:
+            self._level_hub(sink.name, devices)
+        self.backend.set_legs(sink, devices)
+        if not duck:
+            self._level_hub(sink.name, devices)
         self._adopt(devices)
 
     def _prepare(self, devices: list[AudioDevice]) -> None:
         """Unmute each output and put it back at its own level."""
         for d in devices:
             if d.sink:
+                self._levels.pop(d.sink, None)  # a queued tick must not undo this direct set
                 try:
                     self.backend.set_mute(d.sink, False)
                     self.backend.set_volume(d.sink, d.volume)

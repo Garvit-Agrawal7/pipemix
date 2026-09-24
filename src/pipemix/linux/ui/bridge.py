@@ -85,8 +85,10 @@ class Bridge:
     def _on_devices(self, _controller, devices) -> None:
         self._push("devices", self.api._devices_payload(devices))
 
-    def _on_state(self, _controller, state) -> None:
-        self._push("state", to_json(state))
+    def _on_state(self, controller, state) -> None:
+        # Signals fire synchronously on the emitting thread, so the sink read
+        # here is the one that belongs to this state, not a later one.
+        self._push("state", {"state": to_json(state), "sink": controller.active_sink()})
 
     def _on_health(self, _controller, status) -> None:
         self._push("health", to_json(status))
