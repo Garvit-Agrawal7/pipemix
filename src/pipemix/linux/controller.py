@@ -78,7 +78,7 @@ class Controller(GObject.Object):
         self.devices: dict[str, AudioDevice] = {}
         self.prev_default: str | None = None
 
-        # MACs we want back if they reconnect mid-session.
+        # Devices we want back if they reconnect or are plugged back in mid-session.
         self.targets: set[str] = set()
 
         # Streams the user routed by hand → the device ids they picked, so a
@@ -306,6 +306,8 @@ class Controller(GObject.Object):
             # An unplugged output gets no BlueZ event, so it takes the same exit.
             for dev_id in known - wired:
                 self._on_disconnect(dev_id)
+            if (wired - known) & self.targets:
+                self._rebuild()
 
     # ---------- Presets ----------
 
@@ -403,7 +405,7 @@ class Controller(GObject.Object):
     def _adopt(self, devices: list[AudioDevice]) -> None:
         """Record who the session is for, now that the routing matches."""
         self.session.devices = devices
-        self.targets = {d.id for d in devices if d.kind == DeviceKind.BLUETOOTH}
+        self.targets = {d.id for d in devices}
         # The page reads who is in the session off each device.
         self.emit("devices-changed", list(self.devices.values()))
         self._set_state(SessionState.ACTIVE)
@@ -551,8 +553,7 @@ class Controller(GObject.Object):
             del self.overrides[sid]
         self._sync_hubs()
 
-        in_session = dev_id in self.targets or any(d.id == dev_id for d in self.session.devices)
-        if not (self.session.is_active and in_session):
+        if not (self.session.is_active and dev_id in self.targets):
             return
 
         log.warning("An active sharing device (%s) disconnected.", dev_id)
@@ -560,7 +561,6 @@ class Controller(GObject.Object):
             d for d in (self.devices.get(t) for t in self.targets if t != dev_id)
             if d and d.connected and d.sink
         ]
-        remaining += [d for d in self.session.devices if d.kind != DeviceKind.BLUETOOTH and d.id != dev_id]
 
         # Drop that one leg. The hub stays the default sink either way, so the
         # streams playing into it keep playing and nothing has to be moved.
@@ -587,10 +587,9 @@ class Controller(GObject.Object):
     def _rebuild(self) -> None:
         """Feed the hub back to each target that has come back, as it comes back."""
         ready = [
-            d for d in (self.devices.get(mac) for mac in self.targets)
+            d for d in (self.devices.get(t) for t in self.targets)
             if d and d.connected and d.sink
         ]
-        ready += [d for d in self.session.devices if d.kind != DeviceKind.BLUETOOTH]
         if not (self.session.sink and ready):
             return
 
