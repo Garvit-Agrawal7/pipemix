@@ -17,7 +17,7 @@ import functools
 import logging
 from typing import TYPE_CHECKING, Callable
 
-from pipemix.linux.models import AudioDevice
+from pipemix.models import AudioDevice
 from pipemix.linux.services.backend import BackendError
 from pipemix.linux.ui.bridge import to_json
 

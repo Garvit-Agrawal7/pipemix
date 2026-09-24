@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pipemix.linux.models import AudioDevice, DeviceKind, VirtualSink, path_to_mac, sink_to_mac
+from pipemix.models import AudioDevice, DeviceKind, VirtualSink, path_to_mac, sink_to_mac
 from pipemix.linux.services.backend.pactl_backend import _kind, _parse_inputs, _parse_sinks
 from pipemix.linux.services.config.config_manager import ConfigManager
 
