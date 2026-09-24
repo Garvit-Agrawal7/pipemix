@@ -27,10 +27,28 @@ INSTALLED_WEB = Path("/usr/share/pipemix/web")
 
 
 def _entry() -> str:
-    """The built frontend: local checkout first, then the installed copy."""
-    local = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-    root = local if local.exists() else INSTALLED_WEB
-    return str(root / "index.html")
+    """The built frontend: local checkout first, then the installed copy.
+
+    From `src/pipemix/linux/app.py` the repo root is `parents[3]`. It was
+    `parents[2]` until this file moved down a level into `linux/`, which
+    quietly started pointing at `src/` instead — invisible in day-to-day work,
+    because the dev flow sets `PIPEMIX_DEV=1` and loads the vite server.
+    """
+    candidates = [
+        Path(__file__).resolve().parents[3] / "frontend" / "dist",
+        INSTALLED_WEB,
+    ]
+    for root in candidates:
+        if (root / "index.html").is_file():
+            return str(root / "index.html")
+
+    # Returning a path that does not exist gets rendered as an unhelpful
+    # "URL not found" by pywebview's internal file server. Say what is wrong.
+    raise FileNotFoundError(
+        "No built frontend found. Looked in: "
+        + ", ".join(str(c) for c in candidates)
+        + ". Build it with: cd frontend && npm install && npm run build"
+    )
 
 
 def run_gui() -> int:
