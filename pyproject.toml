@@ -14,7 +14,7 @@ license = { text = "GPL-3.0-or-later" }
 dependencies = []
 
 [project.scripts]
-pipemix = "pipemix.main:main"
+pipemix = "pipemix.linux.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pipemix"]

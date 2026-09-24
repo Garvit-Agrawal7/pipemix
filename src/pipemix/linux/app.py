@@ -28,7 +28,7 @@ INSTALLED_WEB = Path("/usr/share/pipemix/web")
 
 def _entry() -> str:
     """The built frontend: local checkout first, then the installed copy."""
-    local = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    local = Path(__file__).resolve().parents[3] / "frontend" / "dist"
     root = local if local.exists() else INSTALLED_WEB
     return str(root / "index.html")
 
