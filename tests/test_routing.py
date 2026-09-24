@@ -150,6 +150,25 @@ def test_shutdown_hands_streams_back_to_default(tmp_path: Path) -> None:
     b.destroy_sink.assert_called_with(hub)
 
 
+def test_stop_sharing_moves_streams_before_hubs_go(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    b = ctrl.backend
+    b.get_default.return_value = "original_sink"
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.start_sharing([d1, d2])
+    ctrl.route_stream(42, [d1.id, d2.id])
+    ctrl.route_stream(43, [d1.id])
+    b.reset_mock()
+
+    ctrl.stop_sharing()
+
+    names = [c[0] for c in b.mock_calls]
+    b.move_streams.assert_called_once_with("original_sink", exclude=[43])
+    assert names.index("move_streams") < names.index("destroy_sink")
+
+
 # -- Empty device list is a no-op --
 
 def test_start_with_no_devices_is_noop(tmp_path: Path) -> None:

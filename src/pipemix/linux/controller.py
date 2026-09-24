@@ -404,6 +404,10 @@ class Controller(GObject.Object):
             if self.prev_default:
                 try:
                     self.backend.set_default(self.prev_default)
+                    # Moved before the hubs go, or streams still in them drop
+                    # out for a beat. Ones pinned to a single device stay put.
+                    pinned = [s for s in self.overrides if s not in self.hubs]
+                    self.backend.move_streams(self.prev_default, exclude=pinned)
                 except Exception as e:
                     log.warning("Could not restore original default sink: %s", e)
 
