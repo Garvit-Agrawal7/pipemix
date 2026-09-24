@@ -61,9 +61,12 @@ class Api:
 
         out = []
         for dev in devices:
-            # An offline device cannot be shared to, so it cannot stay ticked.
+            # An offline device cannot be shared to, so it cannot stay ticked, and
+            # one the session takes back when it returns has to be ticked again.
             if not dev.connected:
                 self._selected[dev.id] = False
+            elif dev in self._controller.session.devices:
+                self._selected[dev.id] = True
             self._selected.setdefault(dev.id, dev.id in wanted)
             # "target" is what lets the page tell a device that dropped out of a
             # live session apart from one that was simply never enabled.

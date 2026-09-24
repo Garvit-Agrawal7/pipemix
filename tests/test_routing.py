@@ -44,6 +44,7 @@ from pipemix.linux.services.backend import BackendError, BackendHealth, BackendS
 from pipemix.linux.services.config.config_manager import ConfigManager
 import pipemix.linux.controller as controller_module
 from pipemix.linux.controller import Controller
+from pipemix.linux.ui.api import Api
 
 
 def _dev(mac: str, name: str = "Dev", sink: str | None = None, kind=DeviceKind.BLUETOOTH) -> AudioDevice:
@@ -520,3 +521,24 @@ def test_mark_coalesces_a_burst(tmp_path: Path, monkeypatch) -> None:
 
     fake_glib.timeout_add.assert_called_once()
     assert ctrl._pending == {"streams", "sinks"}
+
+
+def test_output_is_ticked_again_when_it_rejoins(tmp_path: Path) -> None:
+    """Unplugging unticks it; the session taking it back on replug must tick it again."""
+    ctrl = _ctrl(tmp_path)
+    api = Api(ctrl)
+    u = _dev("alsa_usb", sink="alsa_usb", kind=DeviceKind.USB)
+    ctrl.devices = {u.id: u}
+    api.toggle_device(u.id, True)
+    api.start_sharing()
+    ctrl.backend.list_outputs.return_value = []
+
+    ctrl._hotplug()
+
+    assert not api._devices_payload()[0]["selected"]
+
+    ctrl.backend.list_outputs.return_value = [_dev(u.id, sink="alsa_usb", kind=DeviceKind.USB)]
+
+    ctrl._hotplug()
+
+    assert api._devices_payload()[0]["selected"]
