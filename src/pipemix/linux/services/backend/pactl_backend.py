@@ -7,6 +7,7 @@ in the app goes through here; the Controller and UI never shell out themselves.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
@@ -16,8 +17,8 @@ from pipemix.linux.services.backend import BackendError, BackendHealth, BackendS
 
 log = logging.getLogger(__name__)
 
-# How much buffer each loopback keeps. Low enough that the outputs stay in step
-# with each other, high enough to survive a Bluetooth hiccup — tune by ear.
+# Delay the slowest leg gets; every other leg adds on top of it to line up with
+# it (see set_legs). High enough to survive a Bluetooth hiccup — tune by ear.
 LOOPBACK_LATENCY_MS = 60
 
 
@@ -183,6 +184,27 @@ class PactlBackend:
             return "USB Audio Device"
         return "Built-in Audio"
 
+    def _latencies(self) -> dict[str, int]:
+        """{sink name: ns the device adds, its latency offset included}. Empty on failure."""
+        rc, out, _ = _run(["pw-dump"])
+        if rc != 0:
+            return {}
+        try:
+            lat = {}
+            for obj in json.loads(out):
+                if not obj.get("type", "").endswith("Node"):
+                    continue
+                info = obj.get("info") or {}
+                name = (info.get("props") or {}).get("node.name")
+                for p in (info.get("params") or {}).get("Latency") or []:
+                    if name and p.get("direction") == "Input":
+                        # ponytail: quantum term dropped; every sink reports 1 quantum, so it cancels
+                        lat[name] = p["minNs"] + p["minRate"] * 1_000_000_000 // 48000
+            return lat
+        except Exception:
+            log.debug("pw-dump output unparsable")
+            return {}
+
     def _sink_names(self) -> dict[str, str]:
         """{sink index: sink name}. Empty on failure."""
         rc, out, _ = _run(["pactl", "list", "short", "sinks"])
@@ -303,22 +325,34 @@ class PactlBackend:
     def set_legs(self, sink: VirtualSink, devices: list[AudioDevice]) -> None:
         """Make the hub feed exactly these outputs, touching only what changed."""
         wanted = {d.sink for d in devices if d.sink}
+        lat = self._latencies()
+        # High-water mark: a slow device dropping out doesn't pull the rest forward,
+        # so a Bluetooth flap never glitches the outputs that stayed.
+        sink.slowest = max([sink.slowest, *(lat.get(t, 0) for t in wanted)])
 
-        for target in wanted - set(sink.legs):
+        for target in wanted:
+            if not lat and target in sink.delays:
+                continue  # pw-dump failed transiently; don't disturb an already-aligned leg
+            ms = LOOPBACK_LATENCY_MS + (sink.slowest - lat.get(target, 0)) // 1_000_000
+            if sink.delays.get(target) == ms:
+                continue
             module = _load([
                 "module-loopback",
                 f"source={sink.name}.monitor",
                 f"sink={target}",
-                f"latency_msec={LOOPBACK_LATENCY_MS}",
+                f"latency_msec={ms}",
                 f"sink_input_properties=media.name={sink.name}",
             ])
             if module is None:
-                continue
-            sink.legs[target] = module
-            log.info("%s now feeds %s", sink.name, target)
+                continue  # the old leg, if any, keeps playing
+            if target in sink.legs:
+                self._unload(sink.legs[target])  # make before break
+            sink.legs[target], sink.delays[target] = module, ms
+            log.info("%s now feeds %s at %dms", sink.name, target, ms)
 
         for target in set(sink.legs) - wanted:
             self._unload(sink.legs.pop(target))
+            sink.delays.pop(target, None)
             log.info("%s no longer feeds %s", sink.name, target)
 
     def _unload(self, module: int) -> None:

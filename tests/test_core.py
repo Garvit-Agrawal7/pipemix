@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pipemix.linux.models import AudioDevice, DeviceKind, VirtualSink, path_to_mac, sink_to_mac
-from pipemix.linux.services.backend.pactl_backend import _kind, _parse_inputs, _parse_sinks
+from pipemix.linux.services.backend import pactl_backend
+from pipemix.linux.services.backend.pactl_backend import PactlBackend, _kind, _parse_inputs, _parse_sinks
 from pipemix.linux.services.config.config_manager import ConfigManager
 
 SINKS = """Sink #46
@@ -75,6 +77,117 @@ def test_parse_inputs() -> None:
     assert streams[0]["sink_index"] == "46"
     assert streams[0]["mute"] is False
     assert streams[1]["mute"] is True
+
+
+def _pw_node(name: str, ns: int) -> dict:
+    return {
+        "type": "PipeWire:Interface:Node",
+        "info": {
+            "props": {"node.name": name},
+            "params": {"Latency": [
+                {"direction": "Output", "minNs": 999_000_000},  # not Input: must be ignored
+                {"direction": "Input", "minQuantum": 1.0, "maxQuantum": 1.0,
+                 "minRate": 0, "maxRate": 0, "minNs": ns, "maxNs": ns},
+            ]},
+        },
+    }
+
+
+def _loaded(loads: list[list[str]], *frags: str) -> bool:
+    """True if some recorded _load call carries every fragment, in any of its args."""
+    return any(all(any(f in a for a in call) for f in frags) for call in loads)
+
+
+def test_leg_delays(monkeypatch) -> None:
+    # wired reports 0 ns, bt reports 200 ms — pw-dump is the only source of truth.
+    monkeypatch.setattr(pactl_backend, "_run", lambda args: (
+        0, json.dumps([_pw_node("wired", 0), _pw_node("bt", 200_000_000)]), ""
+    ))
+
+    loads: list[list[str]] = []
+    ids = iter(range(1, 100))
+    monkeypatch.setattr(pactl_backend, "_load", lambda args: (loads.append(args), next(ids))[1])
+    unloads: list[int] = []
+    monkeypatch.setattr(PactlBackend, "_unload", lambda self, module: unloads.append(module))
+
+    backend = PactlBackend()
+    sink = VirtualSink(1, "pipemix_test")
+    wired = AudioDevice("w", "Wired", "wired", DeviceKind.BUILTIN)
+    bt = AudioDevice("b", "BT", "bt", DeviceKind.BLUETOOTH)
+    ghost = AudioDevice("g", "Ghost", None, DeviceKind.UNKNOWN)  # disconnected: no sink to route to
+
+    # 1. one device (plus a disconnected one, which must be ignored) → base delay
+    backend.set_legs(sink, [wired, ghost])
+    assert _loaded(loads, "sink=wired", "latency_msec=60")
+    assert sink.delays["wired"] == 60
+    assert None not in sink.legs
+
+    # 2. a slower device joins: the fast leg reloads to match it, old module unloaded
+    wired_module = sink.legs["wired"]
+    backend.set_legs(sink, [wired, bt])
+    assert unloads == [wired_module]
+    assert _loaded(loads, "sink=wired", "latency_msec=260")
+    assert _loaded(loads, "sink=bt", "latency_msec=60")
+    assert sink.delays == {"wired": 260, "bt": 60}
+
+    # 3. high-water mark: dropping bt unloads it but does not pull wired back down
+    bt_module = sink.legs["bt"]
+    n_loads = len(loads)
+    backend.set_legs(sink, [wired])
+    assert len(loads) == n_loads, "wired must not reload"
+    assert unloads == [wired_module, bt_module]
+    assert sink.delays["wired"] == 260
+    assert "bt" not in sink.legs
+
+
+def test_leg_delays_pw_dump_fails(monkeypatch) -> None:
+    # today's behaviour: no latency data means every leg gets the plain floor.
+    monkeypatch.setattr(pactl_backend, "_run", lambda args: (1, "", "no pw-dump"))
+    monkeypatch.setattr(pactl_backend, "_load", lambda args: 1)
+    monkeypatch.setattr(PactlBackend, "_unload", lambda self, module: None)
+
+    backend = PactlBackend()
+    sink = VirtualSink(1, "pipemix_test")
+    wired = AudioDevice("w", "Wired", "wired", DeviceKind.BUILTIN)
+    bt = AudioDevice("b", "BT", "bt", DeviceKind.BLUETOOTH)
+
+    backend.set_legs(sink, [wired, bt])
+    assert sink.delays == {"wired": 60, "bt": 60}
+
+
+def test_latencies_malformed_json(monkeypatch) -> None:
+    # pw-dump's schema is undocumented and shells out to a process we don't control —
+    # an odd-but-valid JSON shape must degrade to {}, never raise, like _sink_names().
+    backend = PactlBackend()
+    for raw in ('{"foo": "bar"}', '"hello world"', "[null]",
+                json.dumps([{"type": "PipeWire:Interface:Node", "info": {
+                    "props": {"node.name": "x"}, "params": {"Latency": [1, 2, 3]}}}])):
+        monkeypatch.setattr(pactl_backend, "_run", lambda args, raw=raw: (0, raw, ""))
+        assert backend._latencies() == {}
+
+
+def test_leg_delays_transient_failure(monkeypatch) -> None:
+    # pw-dump fails after legs are already aligned: don't tear down what's correct.
+    monkeypatch.setattr(pactl_backend, "_run", lambda args: (
+        0, json.dumps([_pw_node("wired", 0), _pw_node("bt", 200_000_000)]), ""
+    ))
+    loads: list[list[str]] = []
+    monkeypatch.setattr(pactl_backend, "_load", lambda args: (loads.append(args), len(loads))[1])
+    monkeypatch.setattr(PactlBackend, "_unload", lambda self, module: None)
+
+    backend = PactlBackend()
+    sink = VirtualSink(1, "pipemix_test")
+    wired = AudioDevice("w", "Wired", "wired", DeviceKind.BUILTIN)
+    bt = AudioDevice("b", "BT", "bt", DeviceKind.BLUETOOTH)
+
+    backend.set_legs(sink, [wired, bt])
+    assert sink.delays == {"wired": 260, "bt": 60}
+
+    monkeypatch.setattr(pactl_backend, "_run", lambda args: (1, "", "pw-dump timed out"))
+    n_loads = len(loads)
+    backend.set_legs(sink, [wired, bt])
+    assert len(loads) == n_loads, "already-aligned legs must not reload on a transient failure"
+    assert sink.delays == {"wired": 260, "bt": 60}
 
 
 def test_device_identity() -> None:
