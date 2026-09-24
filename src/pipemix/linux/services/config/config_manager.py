@@ -35,7 +35,7 @@ class ConfigManager:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or _default_config_path()
-        self.data: dict = {"devices": {}, "presets": {}, "last_preset": None}
+        self.data: dict = {"devices": {}, "presets": {}, "last_preset": None, "prev_default": None}
         self.load()
 
     def load(self) -> None:
@@ -56,6 +56,7 @@ class ConfigManager:
             "devices": raw.get("devices", {}),
             "presets": raw.get("presets", {}),
             "last_preset": raw.get("last_preset"),
+            "prev_default": raw.get("prev_default"),
         }
 
     def save(self) -> None:
