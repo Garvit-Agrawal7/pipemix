@@ -82,6 +82,8 @@ button{font:inherit;color:inherit;background:none;border:none;padding:0;margin:0
 .pulse{animation:pl 1.4s ease-in-out infinite}
 
 .banner{display:flex;gap:13px;align-items:flex-start;background:#161B1D;border:1px solid #2C363B;border-left:3px solid #E0955A;border-radius:12px;padding:14px 16px;margin-bottom:13px}
+.banner.info{border-left-color:#74C49B}
+.banner.info a{color:#74C49B}
 .bsm{height:34px;padding:0 14px;border-radius:9px;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;flex:none;background:#1F272B;color:#E0955A;border:1px solid #38443A;cursor:pointer;transition:background-color 120ms ease,border-color 120ms ease}
 .bsm:hover{background:#262F33}
 .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#657177;padding:24px 0}

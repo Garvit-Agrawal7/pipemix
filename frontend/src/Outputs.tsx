@@ -187,6 +187,24 @@ export default function Outputs(props: OutputsProps) {
         </div>
       )}
 
+      {health.engine === "leader" && (
+        <div className="banner info">
+          <div className="lvico">
+            <IconSignal />
+          </div>
+          <div className="grow">
+            <div className="lvnm">Running in mirror mode</div>
+            <div className="lvmeta">
+              Outputs may drift up to 50 ms apart. Install{" "}
+              <a href="https://vb-audio.com/Cable/" target="_blank" rel="noreferrer">
+                VB-CABLE
+              </a>{" "}
+              for synced output.
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="list">
         {offlineInPreset > 0 && (
           <div className="note">
@@ -250,6 +268,9 @@ export default function Outputs(props: OutputsProps) {
                   <div className="lvnm">{d.name}</div>
                   <div className="lvmeta">{meta(d, recon)}</div>
                 </div>
+                {health.engine === "leader" && d.primary && (
+                  <div className="st g">PRIMARY</div>
+                )}
                 {recon ? (
                   <div className="st w">
                     <span className="dot pulse" />

@@ -72,6 +72,7 @@ class Api:
                 "selected": self._selected[dev.id],
                 "target": dev.id in self._controller.targets
                           or any(d.id == dev.id for d in self._controller.session.devices),
+                "primary": dev.id == getattr(self._controller.backend, "leader", None),
             })
         return out
 
