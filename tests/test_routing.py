@@ -454,6 +454,7 @@ def test_wired_output_drops_and_restores_its_leg(tmp_path: Path) -> None:
     ctrl = _ctrl(tmp_path)
     u1 = _dev("alsa_usb", sink="alsa_usb", kind=DeviceKind.USB)
     u2 = _dev("alsa_hdmi", sink="alsa_hdmi", kind=DeviceKind.HDMI)
+    u2.volume = 30
     ctrl.devices = {u1.id: u1, u2.id: u2}
     ctrl.start_sharing([u1, u2])
     hub = ctrl.session.sink
@@ -465,15 +466,46 @@ def test_wired_output_drops_and_restores_its_leg(tmp_path: Path) -> None:
     ctrl.backend.set_legs.assert_called_with(hub, [u1])
     assert ctrl.session.devices == [u1]
     assert ctrl.session.state == SessionState.ACTIVE
+    # Still listed, offline, like a dropped Bluetooth device.
+    assert not ctrl.devices[u2.id].connected and u2.id in ctrl.targets
 
-    # Plugged back in: it comes back as a new object, and gets its leg back.
-    ctrl.backend.list_outputs.return_value = [u1, _dev(u2.id, sink=u2.sink, kind=DeviceKind.HDMI)]
+    # The offline entry must not look like a fresh unplug on every event.
+    ctrl.monitor.connected.reset_mock()
+    ctrl._hotplug()
+    ctrl.monitor.connected.assert_not_called()
+
+    # Plugged back in: it comes back as a new object, at its own level.
+    ctrl.backend.list_outputs.return_value = [u1, _dev(u2.id, sink="alsa_hdmi", kind=DeviceKind.HDMI)]
 
     ctrl._hotplug()
 
     ctrl.backend.destroy_sink.assert_not_called()
     assert {d.id for d in ctrl.session.devices} == {u1.id, u2.id}
     assert set(ctrl.backend.set_legs.call_args.args[1]) == {u1, u2}
+    assert ctrl.devices[u2.id].connected and ctrl.devices[u2.id].volume == 30
+
+
+def test_lone_wired_output_waits_to_reconnect(tmp_path: Path) -> None:
+    """Pulled out with nothing else playing: repairing, which the page shows as reconnecting."""
+    ctrl = _ctrl(tmp_path)
+    u = _dev("alsa_usb", sink="alsa_usb", kind=DeviceKind.USB)
+    ctrl.devices = {u.id: u}
+    ctrl.start_sharing([u])
+    hub = ctrl.session.sink
+    ctrl.backend.list_outputs.return_value = []
+
+    ctrl._hotplug()
+
+    assert ctrl.session.state == SessionState.REPAIRING
+    assert ctrl.session.sink is hub
+    assert not ctrl.devices[u.id].connected and u.id in ctrl.targets
+
+    ctrl.backend.list_outputs.return_value = [_dev(u.id, sink="alsa_usb", kind=DeviceKind.USB)]
+
+    ctrl._hotplug()
+
+    assert ctrl.session.state == SessionState.ACTIVE
+    assert [d.id for d in ctrl.session.devices] == [u.id]
 
 
 # -- _mark coalesces a burst of pactl events into one _pw_changed --

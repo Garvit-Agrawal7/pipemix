@@ -188,6 +188,14 @@ class Controller(GObject.Object):
                     volume=self._volume_of(mac, sink),
                 )
 
+            # A session output that dropped stays listed, offline, so the page can
+            # show it reconnecting and it keeps its level for when it comes back.
+            for i in self.targets - found.keys():
+                dev = self.devices.get(i)
+                if dev:
+                    dev.connected, dev.sink = False, None
+                    found[i] = dev
+
             self.devices = found
             self.emit("devices-changed", list(found.values()))
 
@@ -300,7 +308,7 @@ class Controller(GObject.Object):
         except Exception as e:
             log.error("Failed to check for hotplug: %s", e)
             return
-        known = {i for i, d in self.devices.items() if d.kind != DeviceKind.BLUETOOTH}
+        known = {i for i, d in self.devices.items() if d.kind != DeviceKind.BLUETOOTH and d.connected}
         if wired != known:
             self.refresh()
             # An unplugged output gets no BlueZ event, so it takes the same exit.
