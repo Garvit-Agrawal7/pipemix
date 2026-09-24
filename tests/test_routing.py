@@ -449,6 +449,24 @@ def test_disconnect_drops_one_leg(tmp_path: Path) -> None:
     assert ctrl.session.state == SessionState.ACTIVE
 
 
+def test_unplugged_wired_output_drops_one_leg(tmp_path: Path) -> None:
+    """No BlueZ event for a wired output, so the hotplug check has to drop its leg."""
+    ctrl = _ctrl(tmp_path)
+    u1 = _dev("alsa_usb", sink="alsa_usb", kind=DeviceKind.USB)
+    u2 = _dev("alsa_hdmi", sink="alsa_hdmi", kind=DeviceKind.HDMI)
+    ctrl.devices = {u1.id: u1, u2.id: u2}
+    ctrl.start_sharing([u1, u2])
+    hub = ctrl.session.sink
+    ctrl.backend.list_outputs.return_value = [u1]
+
+    ctrl._hotplug()
+
+    ctrl.backend.destroy_sink.assert_not_called()
+    ctrl.backend.set_legs.assert_called_with(hub, [u1])
+    assert ctrl.session.devices == [u1]
+    assert ctrl.session.state == SessionState.ACTIVE
+
+
 # -- _mark coalesces a burst of pactl events into one _pw_changed --
 
 def test_mark_coalesces_a_burst(tmp_path: Path, monkeypatch) -> None:

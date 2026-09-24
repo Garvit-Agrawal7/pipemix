@@ -303,6 +303,9 @@ class Controller(GObject.Object):
         known = {i for i, d in self.devices.items() if d.kind != DeviceKind.BLUETOOTH}
         if wired != known:
             self.refresh()
+            # An unplugged output gets no BlueZ event, so it takes the same exit.
+            for dev_id in known - wired:
+                self._on_disconnect(dev_id)
 
     # ---------- Presets ----------
 
@@ -532,10 +535,11 @@ class Controller(GObject.Object):
             self._rebuild()
 
     @locked
-    def _on_disconnect(self, mac: str) -> None:
-        log.info("Bluetooth disconnected: %s", mac)
+    def _on_disconnect(self, dev_id: str) -> None:
+        """An output went away: a Bluetooth device dropping, or a wired one pulled out."""
+        log.info("Disconnected: %s", dev_id)
 
-        dev = self.devices.get(mac)
+        dev = self.devices.get(dev_id)
         if dev:
             dev.connected = False
             dev.sink = None
@@ -543,19 +547,20 @@ class Controller(GObject.Object):
 
         # PipeWire moves a stream off a sink that vanished, so one pinned to
         # just this device is back to following the session.
-        for sid in [s for s, ids in self.overrides.items() if ids == [mac]]:
+        for sid in [s for s, ids in self.overrides.items() if ids == [dev_id]]:
             del self.overrides[sid]
         self._sync_hubs()
 
-        if not (self.session.is_active and mac in self.targets):
+        in_session = dev_id in self.targets or any(d.id == dev_id for d in self.session.devices)
+        if not (self.session.is_active and in_session):
             return
 
-        log.warning("An active sharing device (%s) disconnected.", mac)
+        log.warning("An active sharing device (%s) disconnected.", dev_id)
         remaining = [
-            d for d in (self.devices.get(t) for t in self.targets if t != mac)
+            d for d in (self.devices.get(t) for t in self.targets if t != dev_id)
             if d and d.connected and d.sink
         ]
-        remaining += [d for d in self.session.devices if d.kind != DeviceKind.BLUETOOTH]
+        remaining += [d for d in self.session.devices if d.kind != DeviceKind.BLUETOOTH and d.id != dev_id]
 
         # Drop that one leg. The hub stays the default sink either way, so the
         # streams playing into it keep playing and nothing has to be moved.
