@@ -10,8 +10,17 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
 
-# Runtime needs pactl, and PyGObject (GTK4 + Gio for D-Bus) from the system packages.
-dependencies = []
+# Linux runtime needs pactl and PyGObject (GTK4 + Gio for D-Bus) from the
+# system packages. Windows needs pycaw, which brings comtypes and psutil:
+# it hand-declares the WASAPI interfaces we would otherwise write out, and
+# does it without comtypes' GetModule, which would not survive PyInstaller.
+dependencies = [
+    "pycaw>=20240210; sys_platform == 'win32'",
+    # Linux gets pywebview from the distro alongside PyGObject; on Windows
+    # there is no system package to get it from, and the GUI will not start
+    # without it.
+    "pywebview>=5.0; sys_platform == 'win32'",
+]
 
 [project.scripts]
 pipemix = "pipemix.main:main"
