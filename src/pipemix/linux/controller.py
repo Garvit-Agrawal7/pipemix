@@ -378,7 +378,7 @@ class Controller(GObject.Object):
 
         try:
             self.prev_default = self.backend.get_default()
-            self.session.sink = self._route(devices)
+            self._route(devices)
             self._adopt(devices)
             log.info("Session active: %s", self.active_sink())
         except Exception as e:
@@ -387,10 +387,12 @@ class Controller(GObject.Object):
             self.stop_sharing()
             raise
 
-    def _route(self, devices: list[AudioDevice]) -> VirtualSink:
+    def _route(self, devices: list[AudioDevice]) -> None:
         """Stand up the hub and point everything that is playing at it."""
         self._prepare(devices)
-        sink = self.backend.create_sink(devices)
+        # On the session the moment it exists, so a failure further down still
+        # gets it torn down by stop_sharing instead of leaking it.
+        sink = self.session.sink = self.backend.create_sink(devices)
 
         # Set the volume before switching output, or the first moment of audio
         # lands at whatever level the new sink happened to be at.
@@ -398,7 +400,6 @@ class Controller(GObject.Object):
 
         self.backend.set_default(sink.name)
         self.backend.move_streams(sink.name, exclude=list(self.overrides))
-        return sink
 
     def _retarget(self, devices: list[AudioDevice]) -> None:
         """Change which outputs the live hub feeds. The hub itself stays put."""

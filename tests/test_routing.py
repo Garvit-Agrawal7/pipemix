@@ -174,6 +174,23 @@ def test_single_device_without_sink_raises(tmp_path: Path) -> None:
     assert ctrl.session.state == SessionState.IDLE
 
 
+def test_failed_start_tears_down_the_hub(tmp_path: Path) -> None:
+    """The hub exists before the default switches, so a failure there must not leak it."""
+    ctrl = _ctrl(tmp_path)
+    ctrl.backend.set_default.side_effect = BackendError("no such sink")
+    dev = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    try:
+        ctrl.start_sharing([dev])
+        assert False, "Should have raised"
+    except BackendError:
+        pass
+
+    ctrl.backend.destroy_sink.assert_called_once()
+    assert ctrl.backend.destroy_sink.call_args.args[0].name.startswith("pipemix_")
+    assert ctrl.session.sink is None
+    assert ctrl.session.state == SessionState.IDLE
+
+
 # -- Volume routing --
 
 def test_device_volume_forwarded(tmp_path: Path) -> None:
