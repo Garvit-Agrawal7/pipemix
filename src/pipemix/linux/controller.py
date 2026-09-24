@@ -106,6 +106,12 @@ class Controller(GObject.Object):
                 self.stop_sharing()
             except Exception as e:
                 log.error("Failed to stop sharing during shutdown: %s", e)
+        # Moving a stream onto the default sink clears its pin, so apps go back
+        # to following the default instead of staying where we put them. Done
+        # before the app hubs go, or their streams drop out for a beat.
+        default = self.backend.get_default()
+        if default:
+            self.backend.move_streams(default)
         self._drop_hubs()
         self.monitor.stop()
 

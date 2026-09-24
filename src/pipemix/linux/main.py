@@ -177,7 +177,7 @@ def main() -> None:
 
     def quit(_sig, _frame):
         print("\nStopping sharing...")
-        ctrl.stop_sharing()
+        ctrl.stop()
         loop.quit()
 
     signal.signal(signal.SIGINT, quit)

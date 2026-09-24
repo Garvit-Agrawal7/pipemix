@@ -131,6 +131,25 @@ def test_stop_destroys_virtual_sink(tmp_path: Path) -> None:
     ctrl.backend.destroy_sink.assert_called_with(sink)
 
 
+def test_shutdown_hands_streams_back_to_default(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    b = ctrl.backend
+    b.get_default.return_value = "sink_default"
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.route_stream(42, [d1.id, d2.id])
+    ctrl.route_stream(43, [d1.id])
+    hub = ctrl.hubs[42]
+
+    ctrl.stop()
+
+    names = [c[0] for c in b.mock_calls]
+    b.move_streams.assert_called_once_with("sink_default")
+    assert names.index("move_streams") < names.index("destroy_sink")
+    b.destroy_sink.assert_called_with(hub)
+
+
 # -- Empty device list is a no-op --
 
 def test_start_with_no_devices_is_noop(tmp_path: Path) -> None:
