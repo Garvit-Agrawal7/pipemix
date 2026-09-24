@@ -3,31 +3,14 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pipemix.linux.models import AudioDevice, DeviceKind, VirtualSink, path_to_mac, sink_to_mac
 from pipemix.linux.services.backend import pactl_backend
-from pipemix.linux.services.backend.pactl_backend import PactlBackend, _kind, _parse_inputs, _parse_sinks
+from pipemix.linux.services.backend.pactl_backend import PactlBackend, _event_kind, _kind, _parse_inputs
 from pipemix.linux.services.config.config_manager import ConfigManager
-
-SINKS = """Sink #46
-\tState: RUNNING
-\tName: bluez_output.61_C5_02_3A_59_49.1
-\tDescription: Boat Airdopes
-\tOwner Module: 12
-\tProperties:
-\t\tdevice.bus = "bluetooth"
-\t\tnode.virtual = "false"
-
-Sink #47
-\tState: IDLE
-\tName: pipemix_8f3a2c1d
-\tDescription: PipeMix Combined
-\tOwner Module: 536870913
-\tProperties:
-\t\tnode.virtual = "true"
-"""
 
 SINK_INPUTS = """Sink Input #101
 \tSink: 46
@@ -61,13 +44,31 @@ def test_kind() -> None:
     assert _kind("alsa_output.pci-0000_00_1f.3.analog-stereo") == DeviceKind.BUILTIN
 
 
-def test_parse_sinks() -> None:
-    sinks = _parse_sinks(SINKS)
-    assert [s["name"] for s in sinks] == ["bluez_output.61_C5_02_3A_59_49.1", "pipemix_8f3a2c1d"]
-    assert sinks[0]["desc"] == "Boat Airdopes"
-    assert sinks[0]["props"]["device.bus"] == "bluetooth"
-    # Orphan recovery needs the module id to unload the right module.
-    assert sinks[1]["module"] == 536870913
+def test_list_outputs() -> None:
+    sinks = [
+        {"name": "alsa_output.pci-0000_00_1f.3.analog-stereo", "description": "Speakers",
+         "properties": {}, "volume": {"front-left": {"value_percent": "99%"}}},
+        {"name": "bluez_output.AA_BB_CC_DD_EE_FF.1", "description": "Boat Airdopes",
+         "properties": {}, "volume": {"mono": {"value_percent": "50%"}}},
+        {"name": "pipemix_8f3a2c1d", "properties": {}, "volume": {}},
+        {"name": "virtual_thing", "properties": {"node.virtual": "true"}, "volume": {}},
+    ]
+    with patch.object(pactl_backend, "_run", return_value=(0, json.dumps(sinks), "")):
+        devices = pactl_backend.PactlBackend().list_outputs()
+
+    assert [(d.id, d.name, d.kind, d.volume) for d in devices] == [
+        ("alsa_output.pci-0000_00_1f.3.analog-stereo", "Speakers", DeviceKind.BUILTIN, 99),
+        ("AA:BB:CC:DD:EE:FF", "Boat Airdopes", DeviceKind.BLUETOOTH, 50),
+    ]
+
+
+def test_event_kind() -> None:
+    # A pactl call we made ourselves shows up as a client event — must be ignored,
+    # or watch() would retrigger itself forever.
+    assert _event_kind("Event 'new' on client #9484") is None
+    assert _event_kind("Event 'new' on sink-input #5") == "streams"
+    assert _event_kind("Event 'remove' on sink #3") == "sinks"
+    assert _event_kind("Event 'change' on sink #3") is None  # volume, not hotplug
 
 
 def test_parse_inputs() -> None:

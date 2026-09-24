@@ -15,11 +15,11 @@ export default function MasterFader({ value, disabled, onChange, onError }: Mast
   const emit = useEmit();
   const dragging = useRef(false);
 
-  const set = (v: number, now = false) => {
+  const set = (v: number, now = false, unmute = false) => {
     onChange(v);
     emit(
       () =>
-        void call("set_master_volume", v).catch((e: unknown) =>
+        void call("set_master_volume", v, unmute).catch((e: unknown) =>
           onError(msg(e)),
         ),
       now,
@@ -39,7 +39,7 @@ export default function MasterFader({ value, disabled, onChange, onError }: Mast
         if (e.button !== 0 || disabled) return;
         dragging.current = true;
         e.currentTarget.setPointerCapture(e.pointerId);
-        set(at(e.clientX, e.currentTarget));
+        set(at(e.clientX, e.currentTarget), true, true);
       }}
       onPointerMove={(e) => {
         if (dragging.current) set(at(e.clientX, e.currentTarget));
@@ -53,7 +53,7 @@ export default function MasterFader({ value, disabled, onChange, onError }: Mast
         const next = keyValue(e, value);
         if (next === null || disabled) return;
         e.preventDefault();
-        set(next, true);
+        set(next, true, true);
       }}
     >
       <div className={disabled ? "lvfill off" : "lvfill"} style={{ width: `${value}%` }} />

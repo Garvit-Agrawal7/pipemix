@@ -11,6 +11,8 @@ import json
 import logging
 import re
 import subprocess
+import time
+from typing import Callable
 
 from pipemix.linux.models import AudioDevice, DeviceKind, VirtualSink, sink_to_mac
 from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
@@ -59,42 +61,19 @@ def _kind(sink: str) -> DeviceKind:
     return DeviceKind.BUILTIN
 
 
-def _parse_sinks(output: str) -> list[dict]:
-    """`pactl list sinks` → one dict per sink (name, description, owner_module, props)."""
-    sinks: list[dict] = []
-    cur: dict = {}
-    in_props = False
+def _event_kind(line: str) -> str | None:
+    """
+    Classify one `pactl subscribe` line, or None to ignore it.
 
-    for raw in output.splitlines():
-        line = raw.strip()
-
-        if raw.startswith("Sink #"):
-            if cur:
-                sinks.append(cur)
-            cur, in_props = {"props": {}}, False
-
-        elif line.startswith("Properties:"):
-            in_props = True
-
-        elif in_props and "=" in line:
-            k, v = line.split("=", 1)
-            cur["props"][k.strip()] = v.strip().strip('"')
-
-        elif line.startswith("Name:"):
-            cur["name"] = line.split(":", 1)[1].strip()
-
-        elif line.startswith("Description:"):
-            cur["desc"] = line.split(":", 1)[1].strip()
-
-        elif line.startswith("Owner Module:"):
-            try:
-                cur["module"] = int(line.split(":", 1)[1].strip())
-            except ValueError:
-                pass
-
-    if cur:
-        sinks.append(cur)
-    return sinks
+    Every pactl call this app makes shows up here too, as a client event —
+    ignored, or watch() would retrigger itself forever. Sink volume changes
+    are also ignored; only a sink appearing or disappearing means hotplug.
+    """
+    if " on sink-input #" in line:
+        return "streams"
+    if " on sink #" in line and "'change'" not in line:
+        return "sinks"
+    return None
 
 
 def _parse_inputs(output: str) -> list[dict]:
@@ -130,6 +109,37 @@ def _parse_inputs(output: str) -> list[dict]:
 
 class PactlBackend:
 
+    def __init__(self) -> None:
+        # Set here, not in watch(): a stop() that lands before the watch
+        # thread starts must still keep it from running.
+        self._stopped = False
+        self._proc: subprocess.Popen | None = None
+
+    def watch(self, on_change: Callable[[str], None]) -> None:
+        """Blocks, running `pactl subscribe` and reporting each classified line."""
+        while not self._stopped:
+            try:
+                self._proc = subprocess.Popen(
+                    ["pactl", "subscribe"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                )
+            except FileNotFoundError:
+                return
+            for line in self._proc.stdout:
+                kind = _event_kind(line)
+                if kind:
+                    on_change(kind)
+            if self._stopped:
+                return
+            log.warning("pactl subscribe exited — restarting.")
+            time.sleep(1)
+            on_change("sinks")
+            on_change("streams")  # catch up on anything missed while it was down
+
+    def unwatch(self) -> None:
+        self._stopped = True
+        if self._proc:
+            self._proc.terminate()
+
     def health(self) -> BackendStatus:
         """Never raises."""
         rc, out, err = _run(["pactl", "info"])
@@ -149,26 +159,28 @@ class PactlBackend:
         return BackendStatus(BackendHealth.OK, "PipeWire is running.")
 
     def list_outputs(self) -> list[AudioDevice]:
-        rc, out, err = _run(["pactl", "list", "sinks"])
+        rc, out, err = _run(["pactl", "-f", "json", "list", "sinks"])
         if rc != 0:
             raise BackendError(f"pactl list sinks failed: {err.strip()}")
 
         devices = []
-        for s in _parse_sinks(out):
+        for s in json.loads(out):
             sink = s.get("name", "")
-            props = s.get("props", {})
+            props = s.get("properties", {})
             if not sink or sink.startswith("pipemix_"):
                 continue
             if props.get("node.virtual") == "true" or props.get("device.bus") == "virtual":
                 continue
 
             kind = _kind(sink)
+            chan = next(iter(s.get("volume", {}).values()), None)
             devices.append(AudioDevice(
                 id=sink_to_mac(sink) or sink,
-                name=s.get("desc") or self._fallback_name(sink, kind),
+                name=s.get("description") or self._fallback_name(sink, kind),
                 sink=sink,
                 kind=kind,
                 connected=True,
+                volume=int(chan["value_percent"].rstrip("%")) if chan else 50,
             ))
 
         log.info("Found %d output(s)", len(devices))
@@ -213,20 +225,13 @@ class PactlBackend:
         rows = (line.split("\t") for line in out.splitlines())
         return {r[0].strip(): r[1].strip() for r in rows if len(r) >= 2}
 
-    def resolve_bt_sinks(self, macs: list[str]) -> dict[str, str | None]:
-        """{mac: sink name or None} for every given MAC, in one pactl call."""
-        found = {}
-        for sink in self._sink_names().values():
-            mac = sink_to_mac(sink)
-            if mac:
-                found[mac] = sink
-
-        resolved = {mac: found.get(mac.upper()) for mac in macs}
-        log.debug("Resolved BT sinks: %s", resolved)
-        return resolved
-
     def resolve_bt_sink(self, mac: str) -> str | None:
-        return self.resolve_bt_sinks([mac])[mac]
+        mac = mac.upper()
+        for sink in self._sink_names().values():
+            if sink_to_mac(sink) == mac:
+                log.debug("Resolved %s -> %s", mac, sink)
+                return sink
+        return None
 
     def list_streams(self) -> list[dict]:
         """
@@ -390,15 +395,6 @@ class PactlBackend:
             orphans.append(VirtualSink(module, found.group()))
             log.warning("Found orphaned module %d for %s", module, found.group())
         return orphans
-
-    def get_volume(self, sink: str) -> int:
-        """0-100, or 100 if it cannot be read."""
-        rc, out, err = _run(["pactl", "get-sink-volume", sink])
-        if rc != 0:
-            log.warning("Failed to get volume for %s: %s", sink, err.strip())
-            return 100
-        m = re.search(r"(\d+)%", out)
-        return int(m.group(1)) if m else 100
 
     def set_volume(self, sink: str, volume: int) -> None:
         vol = max(0, min(100, volume))

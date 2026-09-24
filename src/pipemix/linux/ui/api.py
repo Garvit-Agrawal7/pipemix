@@ -61,9 +61,12 @@ class Api:
 
         out = []
         for dev in devices:
-            # An offline device cannot be shared to, so it cannot stay ticked.
+            # An offline device cannot be shared to, so it cannot stay ticked, and
+            # one the session takes back when it returns has to be ticked again.
             if not dev.connected:
                 self._selected[dev.id] = False
+            elif dev in self._controller.session.devices:
+                self._selected[dev.id] = True
             self._selected.setdefault(dev.id, dev.id in wanted)
             # "target" is what lets the page tell a device that dropped out of a
             # live session apart from one that was simply never enabled.
@@ -119,14 +122,14 @@ class Api:
         return self._devices_payload()
 
     @call
-    def set_device_volume(self, dev_id: str, volume: int) -> int:
+    def set_device_volume(self, dev_id: str, volume: int, unmute: bool = False) -> int:
         """Answers with the master level, which follows a lone output."""
-        self._controller.set_device_volume(dev_id, int(volume))
+        self._controller.set_device_volume(dev_id, int(volume), bool(unmute))
         return self._controller.master_volume
 
     @call
-    def set_master_volume(self, volume: int) -> None:
-        self._controller.set_master_volume(int(volume))
+    def set_master_volume(self, volume: int, unmute: bool = False) -> None:
+        self._controller.set_master_volume(int(volume), bool(unmute))
 
     # ---------- Sharing ----------
 
@@ -135,11 +138,6 @@ class Api:
         if not any(self._selected.values()):
             raise BackendError("Enable at least one output before sharing.")
         self._apply_selection()
-
-    @call
-    def active_sink(self) -> str | None:
-        """Whatever the session is playing through, so streams can name it."""
-        return self._controller.active_sink()
 
     @call
     def stop_sharing(self) -> None:

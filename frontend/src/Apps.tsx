@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { call, msg } from "./api";
 import MasterFader from "./MasterFader";
 import { KIND } from "./Outputs";
@@ -7,7 +7,6 @@ import {
   IconChevron,
   IconMuted,
   IconRefresh,
-  IconSignal,
   IconSplit,
   IconVolume,
   IconWave,
@@ -19,8 +18,9 @@ export interface AppsProps {
   sink: string | null;
   state: SessionState;
   master: number;
+  streams: Stream[];
   onMaster: (v: number) => void;
-  onCount: (n: number) => void;
+  onStreams: (update: (prev: Stream[]) => Stream[]) => void;
   onError: (msg: string) => void;
 }
 
@@ -33,62 +33,32 @@ function label(s: Stream, outs: AudioDevice[], live: boolean): string {
 }
 
 export default function Apps(props: AppsProps) {
-  const [streams, setStreams] = useState<Stream[]>([]);
-  const [err, setErr] = useState("");
   const [open, setOpen] = useState<number | null>(null);
-  const live = useRef(props);
-  live.current = props;
 
-  const { master, state, onMaster, onError } = props;
+  const { master, state, streams, onMaster, onStreams, onError } = props;
   const sessionLive = state === "active";
   const busy = state === "starting" || state === "stopping";
   const anyConnected = props.devices.some((d) => d.connected);
 
-  useEffect(() => {
-    let alive = true;
-    const refresh = async () => {
-      let next: Stream[] = [];
-      let error = "";
-      try {
-        next = await call<Stream[]>("list_streams");
-      } catch (e) {
-        error = msg(e);
-      }
-      if (!alive) return;
-      setErr(error);
-      setStreams(next);
-    };
-    void refresh();
-    const timer = setInterval(refresh, 3000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    live.current.onCount(streams.length);
-  }, [streams.length]);
-
   // Nothing picked means following the session.
   const route = async (id: number, ids: string[] | null) => {
     const devices = ids?.length ? ids : null;
-    setStreams((prev) => prev.map((s) => (s.id === id ? { ...s, devices } : s)));
+    onStreams((prev) => prev.map((s) => (s.id === id ? { ...s, devices } : s)));
     try {
       await call<null>("route_stream", id, devices);
     } catch (e) {
-      props.onError(msg(e));
+      onError(msg(e));
     }
   };
 
   const mute = async (s: Stream) => {
-    setStreams((prev) =>
+    onStreams((prev) =>
       prev.map((x) => (x.id === s.id ? { ...x, mute: !s.mute } : x)),
     );
     try {
       await call<null>("set_stream_mute", s.id, !s.mute);
     } catch (e) {
-      props.onError(msg(e));
+      onError(msg(e));
     }
   };
 
@@ -107,15 +77,8 @@ export default function Apps(props: AppsProps) {
         </p>
       </div>
 
-      {err && (
-        <div className="banner" role="alert">
-          <IconSignal />
-          <div className="grow">{err}</div>
-        </div>
-      )}
-
       <div className="list">
-        {err || streams.length === 0 ? (
+        {streams.length === 0 ? (
           <div className="empty">
             <IconSplit />
             <div>Nothing is playing right now</div>
@@ -218,7 +181,7 @@ export default function Apps(props: AppsProps) {
 
         <div className="note">
           <IconRefresh />
-          Refreshes every 3 seconds.
+          Updates live.
         </div>
       </div>
 
