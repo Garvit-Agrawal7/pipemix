@@ -80,12 +80,12 @@ export default function Outputs(props: OutputsProps) {
 
   const fail = (e: unknown) => onError(msg(e));
 
-  const setDev = (d: AudioDevice, v: number, now = false) => {
+  const setDev = (d: AudioDevice, v: number, now = false, unmute = false) => {
     onDevices(devices.map((x) => (x.id === d.id ? { ...x, volume: v } : x)));
     // When it is the only output live, master is the same control, so take
     // back whatever the backend settled on rather than guessing here.
     emit(
-      () => void call<number>("set_device_volume", d.id, v).then(onMaster).catch(fail),
+      () => void call<number>("set_device_volume", d.id, v, unmute).then(onMaster).catch(fail),
       now,
     );
   };
@@ -97,13 +97,11 @@ export default function Outputs(props: OutputsProps) {
     set(next, true);
   }
 
-  const toggle = (d: AudioDevice) =>
-    void call<AudioDevice[]>("toggle_device", d.id, !d.selected)
-      .then((ds) => {
-        onDevices(ds);
-        onPreset(null); // the backend drops the preset the moment a tick is hand-made
-      })
-      .catch(fail);
+  const toggle = (d: AudioDevice) => {
+    onDevices(devices.map((x) => (x.id === d.id ? { ...x, selected: !d.selected } : x)));
+    onPreset(null); // the backend drops the preset the moment a tick is hand-made
+    void call<AudioDevice[]>("toggle_device", d.id, !d.selected).then(onDevices).catch(fail);
+  };
 
   const pick = (id: string) =>
     void call<{ devices: AudioDevice[]; preset: string | null }>("select_preset", id)
@@ -213,7 +211,9 @@ export default function Outputs(props: OutputsProps) {
                   if (e.button !== 0) return;
                   drag.current = d.id;
                   e.currentTarget.setPointerCapture(e.pointerId);
-                  setDev(d, at(e.clientX, e.currentTarget));
+                  // Sent now: a throttled tick is replaced by the next move,
+                  // and this one carries the unmute.
+                  setDev(d, at(e.clientX, e.currentTarget), true, true);
                 },
                 onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => {
                   if (drag.current === d.id) setDev(d, at(e.clientX, e.currentTarget));
@@ -224,7 +224,7 @@ export default function Outputs(props: OutputsProps) {
                   setDev(d, at(e.clientX, e.currentTarget), true);
                 },
                 onKeyDown: (e: React.KeyboardEvent) =>
-                  keys(e, d.volume, (n, now) => setDev(d, n, now)),
+                  keys(e, d.volume, (n, now) => setDev(d, n, now, true)),
               }
             : {};
 

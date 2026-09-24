@@ -55,12 +55,10 @@ export default function App() {
         if (event === "devices") {
           setDevices(payload as AudioDevice[]);
         } else if (event === "state") {
-          setState(payload as SessionState);
           // The combined sink only exists while a session does.
-          call<string | null>("active_sink").then(
-            (s) => setSink(s),
-            (e) => setError(msg(e)),
-          );
+          const p = payload as { state: SessionState; sink: string | null };
+          setState(p.state);
+          setSink(p.sink);
         } else if (event === "health") {
           setHealth(payload as BackendStatus);
         } else if (event === "streams") {

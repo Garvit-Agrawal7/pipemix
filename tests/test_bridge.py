@@ -9,6 +9,7 @@ UI. These tests pin that down without needing a window.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -26,6 +27,9 @@ class FakeController(GObject.Object):
         "health-changed":  (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "streams-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
     }
+
+    def active_sink(self):
+        return None
 
 
 class BlockingWindow:
@@ -84,9 +88,8 @@ def test_pushes_keep_their_order():
         time.sleep(0.01)
 
     assert len(window.scripts) == 3
-    assert [s.split('"state", ')[1].strip(")") for s in window.scripts] == [
-        '"starting"', '"active"', '"idle"'
-    ]
+    payloads = [json.loads(s.split('"state", ', 1)[1].rstrip(")")) for s in window.scripts]
+    assert [p["state"] for p in payloads] == ["starting", "active", "idle"]
     bridge.close()
 
 
