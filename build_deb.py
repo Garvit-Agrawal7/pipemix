@@ -69,10 +69,10 @@ Description: Route audio to several outputs at once
     with open(pkg_dir / "DEBIAN" / "control", "w", encoding="utf-8") as f:
         f.write(control_content)
 
-    # PYTHONPATH so `import pipemix.app` resolves from the installed tree
+    # PYTHONPATH so `import pipemix.linux.app` resolves from the installed tree
     launcher_content = """#!/bin/bash
 export PYTHONPATH="/usr/share/pipemix/src:$PYTHONPATH"
-exec python3 /usr/share/pipemix/src/pipemix/main.py "$@"
+exec python3 /usr/share/pipemix/src/pipemix/linux/main.py "$@"
 """
     launcher_path = pkg_dir / "usr" / "bin" / "pipemix"
     with open(launcher_path, "w", encoding="utf-8") as f:

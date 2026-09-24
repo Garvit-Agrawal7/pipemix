@@ -153,11 +153,11 @@ class Api:
 
     @call
     def list_streams(self) -> list[dict]:
-        return self._controller.backend.list_streams()
+        return self._controller.streams()
 
     @call
-    def route_stream(self, stream_id: int, sink: str) -> None:
-        self._controller.route_stream(int(stream_id), sink)
+    def route_stream(self, stream_id: int, devices: list[str] | None) -> None:
+        self._controller.route_stream(int(stream_id), devices)
 
     @call
     def set_stream_mute(self, stream_id: int, mute: bool) -> None:

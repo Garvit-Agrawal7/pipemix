@@ -223,14 +223,88 @@ def test_hub_steps_aside_for_one_output(tmp_path: Path) -> None:
     ctrl.backend.set_volume.assert_any_call(ctrl.session.sink.name, 40)
 
 
+# -- The page learns who is in the session from the device push --
+
+def test_sharing_repushes_devices(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    ctrl.emit = MagicMock()
+    pushed = lambda: [c.args[0] for c in ctrl.emit.call_args_list].count("devices-changed")
+
+    ctrl.start_sharing([_dev("AA:BB:CC:DD:EE:01", sink="sink_a")])
+    assert pushed() == 1
+    ctrl.stop_sharing()
+    assert pushed() == 2
+
+
 # -- Stream routing override --
 
 def test_route_stream_records_override(tmp_path: Path) -> None:
     ctrl = _ctrl(tmp_path)
-    ctrl.route_stream(42, "sink_x")
+    d = _dev("AA:BB:CC:DD:EE:01", sink="sink_x")
+    ctrl.devices = {d.id: d}
+    ctrl.route_stream(42, [d.id])
 
-    assert ctrl.overrides[42] == "sink_x"
+    assert ctrl.overrides[42] == [d.id]
     ctrl.backend.move_stream.assert_called_with(42, "sink_x")
+    ctrl.backend.create_sink.assert_not_called()
+
+
+def test_route_stream_to_several_gets_its_own_hub(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    d3 = _dev("AA:BB:CC:DD:EE:03", sink="sink_c")
+    ctrl.devices = {d.id: d for d in (d1, d2, d3)}
+    b = ctrl.backend
+
+    ctrl.route_stream(42, [d1.id, d2.id])
+    hub = ctrl.hubs[42]
+    b.move_stream.assert_called_with(42, hub.name)
+
+    ctrl.route_stream(42, [d1.id, d3.id])     # a toggle moves a leg, not the hub
+    assert ctrl.hubs[42] is hub
+    b.set_legs.assert_called_with(hub, [d1, d3])
+    assert b.create_sink.call_count == 1
+
+    b.get_default.return_value = "sink_default"
+    ctrl.route_stream(42, None)               # back to the session
+    b.move_stream.assert_called_with(42, "sink_default")
+    b.destroy_sink.assert_called_with(hub)
+    assert 42 not in ctrl.hubs and 42 not in ctrl.overrides
+
+
+def test_app_hub_follows_master(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.start_sharing([d1, d2])
+    ctrl.set_master_volume(30)
+
+    ctrl.route_stream(42, [d1.id, d2.id])
+    hub = ctrl.hubs[42]
+    ctrl.backend.set_volume.assert_called_with(hub.name, 30)   # not left at 100
+
+    ctrl.set_master_volume(70)
+    ctrl.backend.set_volume.assert_called_with(hub.name, 70)
+
+
+def test_app_hub_follows_disconnects_and_ends_with_its_stream(tmp_path: Path) -> None:
+    ctrl = _ctrl(tmp_path)
+    d1 = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
+    d2 = _dev("AA:BB:CC:DD:EE:02", sink="sink_b")
+    ctrl.devices = {d1.id: d1, d2.id: d2}
+    ctrl.route_stream(42, [d1.id, d2.id])
+    hub = ctrl.hubs[42]
+
+    ctrl._on_disconnect(d2.id)
+    ctrl.backend.set_legs.assert_called_with(hub, [d1])
+    assert ctrl.overrides[42] == [d1.id, d2.id]   # d2 is let back in on reconnect
+
+    ctrl.backend.list_streams.return_value = [{"id": 7, "name": "x", "sink": "s", "mute": False}]
+    assert ctrl.streams() == [{"id": 7, "name": "x", "sink": "s", "mute": False, "devices": None}]
+    ctrl.backend.destroy_sink.assert_called_with(hub)
+    assert not ctrl.hubs and not ctrl.overrides
 
 
 # -- Orphan cleanup --

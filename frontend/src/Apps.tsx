@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { call, msg } from "./api";
 import MasterFader from "./MasterFader";
+import { KIND } from "./Outputs";
 import type { AudioDevice, SessionState, Stream } from "./types";
 import {
+  IconChevron,
   IconMuted,
   IconRefresh,
   IconSignal,
   IconSplit,
   IconVolume,
   IconWave,
+  kindIcon,
 } from "./icons";
 
 export interface AppsProps {
@@ -21,28 +24,18 @@ export interface AppsProps {
   onError: (msg: string) => void;
 }
 
-interface Opt {
-  value: string;
-  label: string;
+function label(s: Stream, outs: AudioDevice[], live: boolean): string {
+  if (!s.devices)
+    return live ? "All outputs" : outs.find((d) => d.sink === s.sink)?.name ?? "Default output";
+  const names = outs.filter((d) => s.devices!.includes(d.id)).map((d) => d.name);
+  if (names.length === 0) return "Offline";
+  return names.length <= 2 ? names.join(" + ") : `${names.length} outputs`;
 }
-
-function routingOptions(devices: AudioDevice[], sink: string | null): Opt[] {
-  const opts: Opt[] = devices
-    .filter((d) => d.connected && d.sink)
-    .map((d) => ({ value: d.sink as string, label: d.name }));
-  // The session's combined sink is not a device, so a stream following the
-  // session would otherwise have no option matching its own sink.
-  if (sink && !opts.some((o) => o.value === sink))
-    opts.unshift({ value: sink, label: "All outputs (combined)" });
-  return opts;
-}
-
 
 export default function Apps(props: AppsProps) {
   const [streams, setStreams] = useState<Stream[]>([]);
   const [err, setErr] = useState("");
-  const [pinned, setPinned] = useState<number[]>([]);
-  const sig = useRef("");
+  const [open, setOpen] = useState<number | null>(null);
   const live = useRef(props);
   live.current = props;
 
@@ -62,12 +55,6 @@ export default function Apps(props: AppsProps) {
         error = msg(e);
       }
       if (!alive) return;
-      const { devices, sink } = live.current;
-      const now = JSON.stringify([error, next, routingOptions(devices, sink)]);
-      // A refresh that changes nothing must not re-render: it would close an
-      // open <select> under the user's cursor.
-      if (now === sig.current) return;
-      sig.current = now;
       setErr(error);
       setStreams(next);
     };
@@ -83,11 +70,12 @@ export default function Apps(props: AppsProps) {
     live.current.onCount(streams.length);
   }, [streams.length]);
 
-  const route = async (id: number, sink: string) => {
-    setStreams((prev) => prev.map((s) => (s.id === id ? { ...s, sink } : s)));
-    setPinned((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  // Nothing picked means following the session.
+  const route = async (id: number, ids: string[] | null) => {
+    const devices = ids?.length ? ids : null;
+    setStreams((prev) => prev.map((s) => (s.id === id ? { ...s, devices } : s)));
     try {
-      await call<null>("route_stream", id, sink);
+      await call<null>("route_stream", id, devices);
     } catch (e) {
       props.onError(msg(e));
     }
@@ -104,7 +92,10 @@ export default function Apps(props: AppsProps) {
     }
   };
 
-  const opts = routingOptions(props.devices, props.sink);
+  const outs = props.devices.filter((d) => d.connected && d.sink);
+  // An app can only be pointed at what the session is sharing.
+  const shared = outs.filter((d) => d.target);
+  const hub = props.sink !== null;
 
   return (
     <>
@@ -131,11 +122,15 @@ export default function Apps(props: AppsProps) {
           </div>
         ) : (
           streams.map((s) => {
-            const pin = pinned.includes(s.id);
+            const pin = s.devices !== null;
+            const on = open === s.id;
+            const cur = s.devices ?? (hub ? shared : outs.filter((d) => d.sink === s.sink)).map((d) => d.id);
+            const text = shared.length ? label(s, outs, hub) : "No device is sharing";
             return (
-              <div className="lv" key={s.id}>
+              <div className={on ? "lv xp" : "lv"} key={s.id}>
                 {pin && <div className="lvfill" style={{ width: 3 }} />}
-                <div className="lvin">
+                {/* The whole header toggles; the button inside is what keyboards reach. */}
+                <div className="lvin lvhd" onClick={() => setOpen(on ? null : s.id)}>
                   <div className="lvico">
                     <IconWave />
                   </div>
@@ -145,30 +140,77 @@ export default function Apps(props: AppsProps) {
                       stream {s.id} · {pin ? "pinned by you" : "following the session"}
                     </div>
                   </div>
-                  <select
-                    className="selbox"
-                    aria-label={`Output for ${s.name}`}
-                    value={s.sink}
-                    onChange={(e) => void route(s.id, e.target.value)}
+                  <button
+                    className="selbox selbtn"
+                    aria-expanded={on}
+                    aria-controls={`outs-${s.id}`}
+                    aria-label={`Outputs for ${s.name}: ${text}`}
                   >
-                    {!opts.some((o) => o.value === s.sink) && (
-                      <option value={s.sink}>{s.sink}</option>
-                    )}
-                    {opts.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
+                    <span className="t">{text}</span>
+                    <IconChevron />
+                  </button>
                   <button
                     className={s.mute ? "iconbtn muted" : "iconbtn"}
                     aria-label={s.mute ? `Unmute ${s.name}` : `Mute ${s.name}`}
                     aria-pressed={s.mute}
-                    onClick={() => void mute(s)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void mute(s);
+                    }}
                   >
                     {s.mute ? <IconMuted /> : <IconVolume />}
                   </button>
                 </div>
+                {on && (
+                  <div id={`outs-${s.id}`}>
+                    {shared.length === 0 ? (
+                      <div className="xrow">
+                        <div className="lvnm">No device is sharing</div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="xrow">
+                          <div className="grow">
+                            <div className="lvnm">Enable all</div>
+                          </div>
+                          <button
+                            className={pin ? "tg" : "tg on"}
+                            aria-pressed={!pin}
+                            aria-label={`Enable all outputs for ${s.name}`}
+                            onClick={() => void route(s.id, pin ? null : cur)}
+                          >
+                            <i />
+                          </button>
+                        </div>
+                        <div className="hr" />
+                      </>
+                    )}
+                    {shared.map((d) => {
+                      const Ico = kindIcon(d.kind);
+                      const has = cur.includes(d.id);
+                      const next = has ? cur.filter((i) => i !== d.id) : [...cur, d.id];
+                      return (
+                        <div className="xrow" key={d.id}>
+                          <span className="xico">
+                            <Ico size={17} />
+                          </span>
+                          <div className="grow">
+                            <div className="lvnm">{d.name}</div>
+                            <div className="lvmeta">{KIND[d.kind] ?? "Audio"}</div>
+                          </div>
+                          <button
+                            className={has ? (pin ? "tg on" : "tg on soft") : "tg"}
+                            aria-pressed={has}
+                            aria-label={`Play ${s.name} on ${d.name}`}
+                            onClick={() => void route(s.id, next)}
+                          >
+                            <i />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })
@@ -176,8 +218,7 @@ export default function Apps(props: AppsProps) {
 
         <div className="note">
           <IconRefresh />
-          Refreshes every 3 seconds. An open dropdown is never closed by a
-          refresh.
+          Refreshes every 3 seconds.
         </div>
       </div>
 
