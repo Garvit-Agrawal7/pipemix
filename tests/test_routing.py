@@ -39,7 +39,7 @@ _gi_mock.repository.GLib = _FakeGLib
 sys.modules.setdefault("gi", _gi_mock)
 sys.modules.setdefault("gi.repository", _gi_mock.repository)
 
-from pipemix.linux.models import AudioDevice, DeviceKind, SessionState, VirtualSink
+from pipemix.models import AudioDevice, DeviceKind, SessionState, VirtualSink
 from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
 from pipemix.linux.services.config.config_manager import ConfigManager
 import pipemix.linux.controller as controller_module

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pipemix.linux.models import AudioDevice, DeviceKind, VirtualSink, path_to_mac, sink_to_mac
+from pipemix.models import AudioDevice, DeviceKind, VirtualSink, path_to_mac, sink_to_mac
 from pipemix.linux.services.backend import pactl_backend
 from pipemix.linux.services.backend.pactl_backend import PactlBackend, _event_kind, _kind, _parse_inputs
 from pipemix.linux.services.config.config_manager import ConfigManager
@@ -234,7 +234,9 @@ def test_legacy_toml(tmp_path: Path) -> None:
 
 
 def test_missing_config(tmp_path: Path) -> None:
-    assert ConfigManager(tmp_path / "nope.json").data == {"devices": {}, "presets": {}, "last_preset": None}
+    assert ConfigManager(tmp_path / "nope.json").data == {
+        "devices": {}, "presets": {}, "last_preset": None, "prev_default": None,
+    }
 
 
 if __name__ == "__main__":

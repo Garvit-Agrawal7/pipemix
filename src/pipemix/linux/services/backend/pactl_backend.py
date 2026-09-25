@@ -14,7 +14,7 @@ import subprocess
 import time
 from typing import Callable
 
-from pipemix.linux.models import AudioDevice, DeviceKind, VirtualSink, sink_to_mac
+from pipemix.models import AudioDevice, DeviceKind, VirtualSink, sink_to_mac
 from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
 
 log = logging.getLogger(__name__)

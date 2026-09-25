@@ -15,7 +15,7 @@ import time
 
 from gi.repository import GObject
 
-from pipemix.linux.models import AudioDevice, DeviceKind, SessionState
+from pipemix.models import AudioDevice, DeviceKind, SessionState
 from pipemix.linux.services.backend import BackendHealth, BackendStatus
 from pipemix.linux.ui.bridge import Bridge, to_json
 

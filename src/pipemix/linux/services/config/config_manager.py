@@ -1,19 +1,41 @@
-"""Device names and presets, stored in ~/.config/pipemix/config.json."""
+"""Device names and presets.
+
+Linux stores config at ~/.config/pipemix/config.json; Windows at
+%APPDATA%\\PipeMix\\config.json. `default_log_dir` resolves the matching log
+directory for `main.py` on each platform.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 
+def _default_config_path() -> Path:
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+        return Path(appdata) / "PipeMix" / "config.json"
+    return Path.home() / ".config" / "pipemix" / "config.json"
+
+
+def default_log_dir() -> Path:
+    """Where `main.py` should put its rotating log file."""
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
+        return Path(local_appdata) / "PipeMix" / "logs"
+    return Path.home() / ".local" / "share" / "pipemix"
+
+
 class ConfigManager:
 
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or Path.home() / ".config" / "pipemix" / "config.json"
-        self.data: dict = {"devices": {}, "presets": {}, "last_preset": None}
+        self.path = path or _default_config_path()
+        self.data: dict = {"devices": {}, "presets": {}, "last_preset": None, "prev_default": None}
         self.load()
 
     def load(self) -> None:
@@ -34,6 +56,7 @@ class ConfigManager:
             "devices": raw.get("devices", {}),
             "presets": raw.get("presets", {}),
             "last_preset": raw.get("last_preset"),
+            "prev_default": raw.get("prev_default"),
         }
 
     def save(self) -> None:
