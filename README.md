@@ -52,7 +52,7 @@ Then launch **PipeMix** from your applications menu, or run `pipemix`.
 ### Building the package yourself
 
 ```sh
-git clone https://github.com/gaurav-066/pipemix.git
+git clone https://github.com/Garvit-Agrawal7/pipemix.git
 cd pipemix
 npm --prefix frontend install && npm --prefix frontend run build
 python3 build_deb.py
