@@ -1,9 +1,3 @@
-"""
-PipeMix — Controller signals to the web page.
-
-Four signals, one direction. Everything the other way goes through Api.
-"""
-
 from __future__ import annotations
 
 import json

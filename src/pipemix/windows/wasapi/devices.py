@@ -1,16 +1,3 @@
-"""Endpoint enumeration → AudioDevice.
-
-`pycaw` already hand-declares every MMDevice interface we need with plain
-`comtypes` (no `GetModule`, so it survives PyInstaller), so this module is a
-translation layer rather than a COM binding: it asks pycaw for the active
-render endpoints and maps each one onto the `AudioDevice` the Controller and
-UI already understand.
-
-A Windows endpoint id is stable across reconnects, so `AudioDevice.id` and
-`AudioDevice.sink` are the same string here — the Linux MAC/sink split does
-not exist.
-"""
-
 from __future__ import annotations
 
 import logging

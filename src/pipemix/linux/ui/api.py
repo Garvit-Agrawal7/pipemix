@@ -1,16 +1,3 @@
-"""
-PipeMix — the JS-callable surface.
-
-One Api instance is handed to pywebview as js_api. Every method answers
-{"ok": True, "value": ...} or {"ok": False, "error": ...}; nothing raises
-across the bridge.
-
-Which devices are ticked used to live in the GTK MainWindow. That view is
-gone and the backend is off-limits, so the selection lives here, along with
-its two rules: a live session follows the ticks immediately, an idle one only
-stages them, and hand-toggling anything clears the active preset.
-"""
-
 from __future__ import annotations
 
 import functools

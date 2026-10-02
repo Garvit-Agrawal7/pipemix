@@ -1,12 +1,3 @@
-"""The smallest thing that keeps `controller.emit(...)` / `controller.connect(...)`
-working without `GObject.Object`.
-
-Handlers run synchronously, on whatever thread calls `emit` — deliberately: no
-threading cleverness here. `ui/bridge.py` already queues work onto the right
-thread, and notification callbacks already resolve onto a worker thread before
-they ever reach the Controller, so `emit` just has to call what it's given.
-"""
-
 from __future__ import annotations
 
 import logging

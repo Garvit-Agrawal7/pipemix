@@ -1,13 +1,3 @@
-"""
-PipeMix — entry point (Windows).
-
-No arguments launches the GUI; --cli is the interactive text dashboard,
-and --list, --share and --refresh are one-shot commands.
-
-Forked from `pipemix.linux.main`: no GLib main loop (blocking loops
-instead), and `WasapiBackend` instead of `PactlBackend`.
-"""
-
 from __future__ import annotations
 
 import argparse

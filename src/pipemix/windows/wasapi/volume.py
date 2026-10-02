@@ -1,11 +1,3 @@
-"""Per-endpoint volume — `IAudioEndpointVolume`, one activation per call.
-
-Mirrors `pactl set-sink-volume` / `set-sink-mute`: this moves the Windows
-volume slider for the endpoint itself, which is what a user expects when they
-move PipeMix's slider. A failed read logs a warning and returns a safe
-default; a failed write raises `BackendError`.
-"""
-
 from __future__ import annotations
 
 import logging

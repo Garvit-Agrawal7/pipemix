@@ -1,11 +1,3 @@
-"""
-PipeMix — GUI startup.
-
-pywebview renders in WebKitGTK and runs the GLib main loop, so the Controller's
-GObject signals, GLib timers and Gio D-Bus BlueZ monitoring keep working. It
-pins Gtk 3.0 itself, so nothing here may require a Gtk version.
-"""
-
 from __future__ import annotations
 
 import logging

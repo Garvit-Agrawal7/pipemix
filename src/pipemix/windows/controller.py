@@ -1,21 +1,3 @@
-"""
-PipeMix — Controller (Windows).
-
-The state machine: owns the SharingSession, reacts to endpoint hotplug, runs
-crash recovery, drives the backend, and pushes updates to the UI as signals.
-All business logic lives here; the UI only triggers and listens.
-
-Differs from `pipemix.linux.controller`:
-
-- `SignalEmitter` instead of `GObject.Object` (no GLib on Windows).
-- Endpoint ids are stable across reconnects, so there is no MAC layer or
-  `_resolve_retry` chain; `AudioDevice.id` *is* `AudioDevice.sink`.
-- Leader re-election: in leader mode `_on_disconnect` elects a survivor and
-  rebuilds the session on it when the source endpoint vanishes.
-- Hub-mode per-app capture poll (`_sync_apps`) reconciles `set_app_routes`
-  with whatever is actually playing into the hub.
-"""
-
 from __future__ import annotations
 
 import functools

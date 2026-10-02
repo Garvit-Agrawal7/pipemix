@@ -1,9 +1,3 @@
-"""Controller/Api tests for the latency + sync fixes (plan items 5, 6, 8, 10).
-
-Same headless stub pattern as test_routing.py: gi.repository is faked before
-controller.py is imported, and each test swaps in a recording GLib.
-"""
-
 from __future__ import annotations
 
 import sys

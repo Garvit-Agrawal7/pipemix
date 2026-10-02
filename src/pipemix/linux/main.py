@@ -1,10 +1,3 @@
-"""
-PipeMix — entry point.
-
-No arguments launches the GUI; --cli is the interactive text dashboard,
-and --list, --share and --refresh are one-shot commands.
-"""
-
 from __future__ import annotations
 
 import argparse

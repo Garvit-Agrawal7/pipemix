@@ -1,10 +1,3 @@
-"""
-PipeMix — shared data types.
-
-Pure data: no business logic, no I/O. The Controller owns every instance;
-the UI only reads them.
-"""
-
 from __future__ import annotations
 
 import re

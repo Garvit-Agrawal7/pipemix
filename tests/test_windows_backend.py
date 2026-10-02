@@ -1,16 +1,3 @@
-"""
-Tests for WasapiBackend — pure logic, faked engine and wasapi calls, no COM.
-
-`wasapi/policy.py`, `wasapi/volume.py` and `wasapi/sessions.py` are a sibling
-Phase-3 brief's files and may not exist yet when this runs. Real modules are
-used if present; otherwise a bare stand-in is injected into `sys.modules` so
-`pipemix.windows.backend` stays importable here, exactly like `test_routing.py`
-stubs `gi` for the Linux controller. Either way, the backend's own module-level
-names (`Engine`, `list_outputs`, `default_output_id`, `_policy`, `_volume`,
-`_sessions`, `_capture_endpoints`) are what every test below patches, so the
-behaviour under test never depends on which one is real.
-"""
-
 from __future__ import annotations
 
 import sys

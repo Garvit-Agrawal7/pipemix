@@ -1,10 +1,3 @@
-"""Per-app routing: the slot choice and the failure handling.
-
-No COM — the vtable call and `combase` are stubbed, so this runs on Linux CI
-alongside the rest. What it pins down is the two things that were actually
-wrong when this was first written against real Windows.
-"""
-
 from __future__ import annotations
 
 import ctypes

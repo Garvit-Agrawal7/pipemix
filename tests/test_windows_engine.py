@@ -1,14 +1,3 @@
-"""Tests for the process-loopback pieces of the Windows engine/com layer
-(PER-APP-ROUTING.md Phase 1).
-
-Headless: no COM activation, no hardware. Covers contract A (the new
-`com.py` declarations and helpers) and the constructor half of contract B
-(`Engine(source_id=None, *, pid=None)` — exactly one of the two). The
-actual activation path (`_open_source` doing `ActivateAudioInterfaceAsync`
-on the pump thread) needs real mmdevapi and is exercised on hardware via
-`python -m pipemix.windows.wasapi.engine --pid <pid>`, not here.
-"""
-
 from __future__ import annotations
 
 import ctypes
