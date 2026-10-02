@@ -56,10 +56,12 @@ class Controller(SignalEmitter):
         # does not drag them back.
         self.overrides: dict[int, list[str]] = {}
 
-        # Hub-mode app poll: the thread, the event that stops it, and the
-        # last app list pushed to the page.
+        # Hub-mode app poll: the thread, the events that stop and wake it, and
+        # the last app list pushed to the page. Only this thread calls
+        # backend.set_app_routes, so Engine.start/stop never runs under `_lock`.
         self._app_poll: threading.Thread | None = None
         self._app_poll_stop: threading.Event | None = None
+        self._app_wake: threading.Event | None = None
         self._last_streams: list[dict] | None = None
         # pid -> monotonic time it was last seen playing into the hub.
         self._app_active: dict[int, float] = {}
@@ -297,8 +299,7 @@ class Controller(SignalEmitter):
             self._adopt(devices)
             log.info("Session active: %s", self.active_sink())
             if self.backend.health().engine == "hub":
-                self._sync_apps()
-                self._start_app_poll()
+                self._start_app_poll()  # syncs once straight away
         except Exception as e:
             log.error("Failed to start session: %s", e)
             self._set_state(SessionState.ERROR)
@@ -330,7 +331,7 @@ class Controller(SignalEmitter):
         self.backend.set_legs(self.session.sink, devices)
         self._level_hub(self.session.sink.name, devices)
         self._adopt(devices)
-        self._sync_apps()
+        self._wake_apps()
 
     def _prepare(self, devices: list[AudioDevice]) -> None:
         """Unmute each output and put it back at its own level."""
@@ -384,53 +385,66 @@ class Controller(SignalEmitter):
             })
         return out
 
-    @locked
     def _sync_apps(self) -> None:
         """Hand the backend each app playing into the hub with its outputs (override,
         else every session device); push the app list if it changed. Hub mode only.
-        Never raises. A paused app stays routed for APP_IDLE_S, so resuming is instant."""
+        Never raises. A paused app stays routed for APP_IDLE_S, so resuming is instant.
+        The routes are worked out under `_lock`, but applied outside it: starting an
+        app's capture can block for seconds. Called from the poll thread only."""
         # ponytail: 1 s poll; IAudioSessionNotification if the delay before a new app is heard matters.
         try:
-            if not (self.session.is_active and self.session.sink
-                    and self.backend.health().engine == "hub"):
-                self._app_active.clear()
-                return
-            out = self.streams()
-            hub = self.active_sink()
-            session_ids = [d.id for d in self.session.devices]
-            now = time.monotonic()
-            live = {s["id"]: s for s in out}
-            for s in out:
-                if s.get("active") and s.get("endpoint") == hub:
-                    self._app_active[s["id"]] = now
-            # An idle app's endpoint is whichever stale session won the dedupe,
-            # so only an *active* one elsewhere means it left the hub.
-            self._app_active = {
-                pid: t for pid, t in self._app_active.items()
-                if pid in live and now - t < APP_IDLE_S
-                and not (live[pid].get("active") and live[pid].get("endpoint") != hub)
-            }
-            routes = {
-                pid: self.overrides.get(pid) or session_ids
-                for pid in self._app_active
-            }
-            self.backend.set_app_routes(routes)
-            if out != self._last_streams:
-                self._last_streams = out
+            with self._lock:
+                if not (self.session.is_active and self.session.sink
+                        and self.backend.health().engine == "hub"):
+                    self._app_active.clear()
+                    return
+                out = self.streams()
+                hub = self.active_sink()
+                session_ids = [d.id for d in self.session.devices]
+                now = time.monotonic()
+                live = {s["id"]: s for s in out}
+                for s in out:
+                    if s.get("active") and s.get("endpoint") == hub:
+                        self._app_active[s["id"]] = now
+                # An idle app's endpoint is whichever stale session won the dedupe,
+                # so only an *active* one elsewhere means it left the hub.
+                self._app_active = {
+                    pid: t for pid, t in self._app_active.items()
+                    if pid in live and now - t < APP_IDLE_S
+                    and not (live[pid].get("active") and live[pid].get("endpoint") != hub)
+                }
+                routes = {
+                    pid: self.overrides.get(pid) or session_ids
+                    for pid in self._app_active
+                }
+                # Tags the routes with this session, so a restart meanwhile drops them.
+                gen = self.backend.apps_gen
+                changed = out != self._last_streams
+                if changed:
+                    self._last_streams = out
+            self.backend.set_app_routes(routes, gen=gen)
+            if changed:
                 self.emit("streams-changed", out)
         except Exception as e:
             log.warning("Failed to sync per-app routes: %s", e)
 
+    def _wake_apps(self) -> None:
+        """Have the poll thread re-sync now. Safe under `_lock`; a no-op with no poll."""
+        if self._app_wake:
+            self._app_wake.set()
+
     def _start_app_poll(self) -> None:
-        stop = threading.Event()
-
-        def run() -> None:
-            while not stop.wait(APP_POLL_S):
-                self._sync_apps()
-
-        self._app_poll_stop = stop
-        self._app_poll = threading.Thread(target=run, name="pipemix-app-poll", daemon=True)
+        self._app_poll_stop = stop = threading.Event()
+        self._app_wake = wake = threading.Event()
+        self._app_poll = threading.Thread(
+            target=self._poll_apps, args=(stop, wake), name="pipemix-app-poll", daemon=True)
         self._app_poll.start()
+
+    def _poll_apps(self, stop: threading.Event, wake: threading.Event) -> None:
+        while not stop.is_set():
+            self._sync_apps()
+            wake.wait(APP_POLL_S)
+            wake.clear()
 
     def _sweep_pins(self, live: list[dict]) -> None:
         """Clear pins PipeMix left behind (an exe in `pinned_apps` with no override):
@@ -476,7 +490,7 @@ class Controller(SignalEmitter):
                 pinned.remove(exe)
                 self.config.save()
             log.info("Manual route: stream %d → %s", stream_id, [d.id for d in devs] or "session")
-            self._sync_apps()
+            self._wake_apps()
             return
 
         # ponytail: leader mode has no silent sink to capture apps from, so it
@@ -504,6 +518,7 @@ class Controller(SignalEmitter):
         # Never join here: the poll thread may be waiting on this very lock.
         if self._app_poll_stop:
             self._app_poll_stop.set()
+            self._app_wake.set()
         try:
             if self.prev_default:
                 try:
@@ -561,7 +576,7 @@ class Controller(SignalEmitter):
 
         if not (self.session.is_active and device_id in self.targets):
             # It may still have been an app's override target.
-            self._sync_apps()
+            self._wake_apps()
             return
 
         log.warning("An active sharing device (%s) disconnected.", device_id)
@@ -589,7 +604,7 @@ class Controller(SignalEmitter):
         log.info("Continuing on: %s", [d.name for d in remaining])
         self._set_state(SessionState.ACTIVE)
         # After ACTIVE: `_sync_apps` does nothing while the session repairs.
-        self._sync_apps()
+        self._wake_apps()
 
     def _reelect_leader(self) -> None:
         """

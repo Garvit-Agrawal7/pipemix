@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 from pipemix.models import AudioDevice, VirtualSink
 from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
@@ -45,6 +46,14 @@ class WasapiBackend:
         self._routed: set[int] = set()
         self._apps: dict[int, Engine] = {}
         self._failed_apps: set[int] = set()
+        # pid -> device ids last handed to that app's engine (engine.legs lags while opening).
+        self._app_legs: dict[int, frozenset[str]] = {}
+        # Bumped by create_sink/destroy_sink: routes computed for an older session are dropped.
+        self.apps_gen = 0
+        # Guards short mutations of the per-app state above; never held across Engine.start/stop.
+        self._apps_lock = threading.Lock()
+        # Serializes whole set_app_routes calls (only poll threads contend for it).
+        self._routes_lock = threading.Lock()
 
     @property
     def leader(self) -> str | None:
@@ -204,7 +213,9 @@ class WasapiBackend:
             engine = Engine(self._leader)
             engine.start()
 
-        self._hub = hub_id
+        with self._apps_lock:
+            self.apps_gen += 1
+            self._hub = hub_id
 
         # `name` is the endpoint everything plays into, because the
         # Controller passes it to set_default/set_volume.
@@ -235,41 +246,69 @@ class WasapiBackend:
         sink.legs = {d.id: 0 for d in wanted}
         log.info("%s now feeds %s", sink.name, sorted(sink.legs))
 
-    def set_app_routes(self, routes: dict[int, list[str]]) -> None:
+    def set_app_routes(self, routes: dict[int, list[str]], gen: int | None = None) -> None:
         """Reconcile per-app engines with `routes` (pid -> device ids), once per poll:
         one `Engine(pid=...)` per pid, stopped when it drops out, `set_legs` when its
-        devices change. Never raises; a pid that fails to start is skipped until it
-        leaves `routes` and returns."""
-        wanted = set(routes)
+        devices change. `gen` is the `apps_gen` the routes were computed under; stale
+        routes (session stopped or restarted since) are ignored. Hub sessions only.
+        Never raises, never holds _apps_lock across Engine.start/stop, so destroy_sink
+        never waits on an in-flight start. Dropped engines stop before any new one
+        starts. A pid that fails to start is skipped until it leaves `routes` and returns."""
+        with self._routes_lock:
+            with self._apps_lock:
+                gen = self.apps_gen if gen is None else gen
+                if gen != self.apps_gen or self._hub is None or self._leader is not None:
+                    return
+                dead = [self._apps.pop(pid) for pid in list(self._apps) if pid not in routes]
+                self._failed_apps &= set(routes)  # forget a failure once its pid leaves routes
+                self._app_legs = {p: ids for p, ids in self._app_legs.items() if p in self._apps}
+                for pid, engine in self._apps.items():
+                    self._send_legs(pid, engine, routes[pid])
+                new = [p for p in routes if p not in self._apps and p not in self._failed_apps]
 
-        for pid in list(self._apps):
-            if pid not in wanted:
-                engine = self._apps.pop(pid)
-                try:
-                    engine.stop()
-                except Exception:
-                    log.exception("Failed to stop app engine for pid %d", pid)
-        self._failed_apps &= wanted  # forget a failure once its pid leaves routes
-
-        for pid, ids in routes.items():
-            if pid in self._failed_apps:
-                continue
-            engine = self._apps.get(pid)
-            is_new = engine is None
-            if is_new:
+            self._stop_apps(dead)  # before any start: a slow start must not keep these playing
+            late: list[Engine] = []
+            for pid in new:
+                engine = None
                 try:
                     engine = Engine(pid=pid)
                     engine.start()
                 except Exception as e:
                     log.warning("Could not start per-app capture for pid %d: %s", pid, e)
-                    self._failed_apps.add(pid)
+                    with self._apps_lock:
+                        if gen != self.apps_gen:
+                            break
+                        self._failed_apps.add(pid)
                     continue
-                self._apps[pid] = engine
-            if is_new or set(engine.legs) != set(ids):
-                try:
-                    engine.set_legs(ids)
-                except Exception:
-                    log.exception("Failed to set legs for app pid %d", pid)
+                with self._apps_lock:
+                    if gen != self.apps_gen:  # the session ended while this one started
+                        late.append(engine)
+                        break
+                    self._apps[pid] = engine
+                    self._send_legs(pid, engine, routes[pid])
+
+        self._stop_apps(late)
+
+    @staticmethod
+    def _stop_apps(engines: list[Engine]) -> None:
+        """Stop each app engine; never raises. Call with no _apps_lock held."""
+        for engine in engines:
+            try:
+                engine.stop()
+            except Exception:
+                log.exception("Failed to stop app engine for pid %s", engine.pid)
+
+    def _send_legs(self, pid: int, engine: Engine, ids: list[str]) -> None:
+        """set_legs only when the ids differ from the last ones sent. Call under _apps_lock."""
+        wanted = frozenset(ids)
+        if self._app_legs.get(pid) == wanted:
+            return
+        try:
+            engine.set_legs(ids)
+        except Exception:
+            log.exception("Failed to set legs for app pid %d", pid)
+            return
+        self._app_legs[pid] = wanted
 
     def destroy_sink(self, sink: VirtualSink) -> None:
         """Safe to call when the sink is already gone — never raises."""
@@ -282,13 +321,15 @@ class WasapiBackend:
                 log.exception("Engine stop failed for %s", sink)
         sink.legs.clear()
 
-        for pid, app_engine in self._apps.items():
-            try:
-                app_engine.stop()
-            except Exception:
-                log.exception("Failed to stop app engine for pid %d", pid)
-        self._apps.clear()
-        self._failed_apps.clear()
+        # Swap the apps out without waiting on an in-flight set_app_routes: it sees
+        # the gen change and stops whatever it was starting itself.
+        with self._apps_lock:
+            self.apps_gen += 1
+            self._hub = None
+            apps, self._apps = self._apps, {}
+            self._failed_apps.clear()
+            self._app_legs.clear()
+        self._stop_apps(list(apps.values()))
 
         for pid in self._routed:
             try:
@@ -296,7 +337,6 @@ class WasapiBackend:
             except Exception as e:
                 log.warning("Failed to unpin stream %d from the hub: %s", pid, e)
         self._routed.clear()
-        self._hub = None
 
         if self._prev_default:
             try:
