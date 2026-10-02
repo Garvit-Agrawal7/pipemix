@@ -150,6 +150,10 @@ def _settle(e, timeout=2.0):
 
 
 def test_invalidated_leg_is_dropped_and_reopened_without_starving_the_rest(monkeypatch, opener):
+    import pipemix.windows.wasapi.engine as engine_mod
+
+    clock = [100.0]
+    monkeypatch.setattr(engine_mod.time, "monotonic", lambda: clock[0])
     e = opener(Engine("src"))
     e._capture = _NoCapture()
     dead, alive = _FakeLeg("dead", fail=True), _FakeLeg("alive")
@@ -163,8 +167,37 @@ def test_invalidated_leg_is_dropped_and_reopened_without_starving_the_rest(monke
 
     fresh = _FakeLeg("dead")
     monkeypatch.setattr(e, "_open_leg", lambda device_id: fresh)
-    _settle(e)
+    _settle(e)  # a first write failure reopens at once
     assert e._legs["dead"] is fresh
+
+
+def test_leg_that_fails_right_after_reopening_backs_off(monkeypatch, opener):
+    import pipemix.windows.wasapi.engine as engine_mod
+
+    clock = [100.0]
+    monkeypatch.setattr(engine_mod.time, "monotonic", lambda: clock[0])
+    e = opener(Engine("src"))
+    e._capture = _NoCapture()
+    opened = []
+    monkeypatch.setattr(e, "_open_leg", lambda d: opened.append(clock[0]) or _FakeLeg(d, fail=True))
+    e.set_legs(["bad"])
+
+    _settle(e)                          # opened, then won't take writes
+    clock[0] += 0.1
+    e._pump()
+    _settle(e)
+    assert opened == [100.0]            # failed 0.1 s after opening: backing off
+    clock[0] += engine_mod.LEG_RETRY_S
+    _settle(e)
+    assert opened == [100.0, 101.1]
+
+    clock[0] += engine_mod.LEG_RETRY_S + 0.1
+    e._legs["bad"].fail = False
+    e._pump()                           # worked for a while, then fails: reopen at once
+    e._legs["bad"].fail = True
+    e._pump()
+    _settle(e)
+    assert len(opened) == 3
 
 
 def test_leg_that_fails_to_open_is_retried_once_a_second(monkeypatch, opener):
@@ -496,6 +529,73 @@ def test_long_period_device_raises_target_so_data_fits():
     assert render.writes[1] == (480, 0)
     assert sum(n for n, _ in render.writes) == leg.target
     assert _pad_leg()[0].target == 1440  # 10 ms device: unchanged
+
+
+def test_empty_fifo_write_skips_the_padding_call():
+    leg, client, render = _pad_leg()
+    client.GetCurrentPadding = lambda: pytest.fail("GetCurrentPadding called")
+    leg.write()
+
+
+def test_source_period_raises_target_default_unchanged():
+    leg = _pad_leg(period_ms=10, src_period_ms=20)[0]
+    assert leg.target == leg.prime + 960 == 1680
+    assert _pad_leg(src_period_ms=10)[0].target == 1440
+
+
+def test_open_leg_sizes_target_to_the_source_period(monkeypatch):
+    class Client:
+        def __init__(self, period):
+            self.period = period
+        def GetDevicePeriod(self):
+            return (self.period, self.period)
+        def Initialize(self, *a):
+            pass
+        def GetService(self, iid):
+            return self
+        def QueryInterface(self, iface):
+            return self
+        def Start(self):
+            pass
+        def GetBufferSize(self):
+            return 9600
+        def Activate(self, *a):
+            return self
+
+    e = Engine("src")
+    e._fmt = type("P", (), {"contents": type("F", (), {"nBlockAlign": 4, "nSamplesPerSec": 48000})()})()
+    e._client = Client(200_000)                 # 20 ms source packets
+    e._start_capture(0)
+    monkeypatch.setattr(e, "_device", lambda d: Client(100_000))  # 10 ms leg
+    assert e._open_leg("d").target == 1680
+
+
+def test_period_of_a_client_without_device_period_is_10ms():
+    from pipemix.windows.wasapi.engine import _period_ms
+    def nope(s):
+        raise OSError("Not implemented")
+    assert _period_ms(type("C", (), {"GetDevicePeriod": nope})()) == 10.0
+
+
+def test_late_leg_after_stop_is_closed_not_queued(monkeypatch, opener):
+    import pipemix.windows.wasapi.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "OPENER_JOIN_S", 0.05)
+    e = opener(Engine("src"))
+    slow = _SlowOpen()
+    monkeypatch.setattr(e, "_open_leg", slow)
+    closed = _closes(monkeypatch, e)
+    e.set_legs(["slow"])
+    e._reconcile()
+    assert slow.entered.wait(2)
+    opener_thread = e._opener
+    e._stop.set()
+    e._close()  # gives up on the busy opener after OPENER_JOIN_S
+    slow.release.set()
+    opener_thread.join(2)
+    assert not opener_thread.is_alive()
+    assert [leg.id for leg in closed] == ["slow"]
+    assert e._results.empty() and e.legs == []
 
 
 # -- MMCSS on the pump thread ---------------------------------------------

@@ -99,6 +99,7 @@ def run_console(ctrl: Controller) -> None:
 
 
 def main() -> None:
+    sys.setswitchinterval(0.001)  # worst-case GIL re-acquire after each COM call: 5 ms -> 1 ms
     parser = argparse.ArgumentParser(description="PipeMix: Windows Multi-Output Audio Router")
     parser.add_argument("--cli", action="store_true", help="Interactive text dashboard")
     parser.add_argument("--list", action="store_true", help="List all detected audio outputs")
