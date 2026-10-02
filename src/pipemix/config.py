@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
+import time
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -66,8 +68,28 @@ class ConfigManager:
     def device_name(self, device_id: str, default: str) -> str:
         return self.data["devices"].get(device_id, default)
 
-    def save_preset(self, preset_id: str, name: str, devices: list[str]) -> None:
+    @property
+    def presets(self) -> dict:
+        return self.data["presets"]
+
+    @property
+    def last_preset(self) -> str | None:
+        return self.data["last_preset"]
+
+    @last_preset.setter
+    def last_preset(self, preset_id: str | None) -> None:
+        self.data["last_preset"] = preset_id
+        self.save()
+
+    def save_preset(self, name: str, devices: list[str]) -> str:
+        preset_id = re.sub(r"[^a-z0-9_]", "", name.lower().replace(" ", "_"))
+        if not preset_id:
+            preset_id = f"preset_{int(time.time())}"
         self.data["presets"][preset_id] = {"name": name, "devices": devices}
+        self.save()
+        log.info("Saved preset '%s' (%s): %s", name, preset_id, devices)
+        return preset_id
 
     def delete_preset(self, preset_id: str) -> None:
         self.data["presets"].pop(preset_id, None)
+        self.save()

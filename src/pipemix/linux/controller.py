@@ -3,9 +3,7 @@ from __future__ import annotations
 import functools
 import logging
 import queue
-import re
 import threading
-import time
 from typing import TYPE_CHECKING
 
 from gi.repository import GLib, GObject
@@ -326,34 +324,6 @@ class Controller(GObject.Object):
         if back or bt:
             self._rebuild()
             self._sync_hubs()
-
-    # ---------- Presets ----------
-
-    @property
-    def presets(self) -> dict:
-        return self.config.data["presets"]
-
-    @property
-    def last_preset(self) -> str | None:
-        return self.config.data["last_preset"]
-
-    @last_preset.setter
-    def last_preset(self, preset_id: str | None) -> None:
-        self.config.data["last_preset"] = preset_id
-        self.config.save()
-
-    def save_preset(self, name: str, devices: list[str]) -> str:
-        preset_id = re.sub(r"[^a-z0-9_]", "", name.lower().replace(" ", "_"))
-        if not preset_id:
-            preset_id = f"preset_{int(time.time())}"
-        self.config.save_preset(preset_id, name, devices)
-        self.config.save()
-        log.info("Saved preset '%s' (%s): %s", name, preset_id, devices)
-        return preset_id
-
-    def delete_preset(self, preset_id: str) -> None:
-        self.config.delete_preset(preset_id)
-        self.config.save()
 
     # ---------- Sharing ----------
 
