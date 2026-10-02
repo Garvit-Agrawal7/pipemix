@@ -1,11 +1,3 @@
-"""The Apps tab — `IAudioSessionManager2` per active render endpoint.
-
-Sessions are per-endpoint, not global: an app playing to a Bluetooth headset
-does not show up when you only enumerate the default device, so every active
-render endpoint is enumerated and the results are deduped by PID. On Windows
-the PID *is* the stream identity; there is no sink-input index.
-"""
-
 from __future__ import annotations
 
 import ctypes

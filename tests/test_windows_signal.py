@@ -1,18 +1,3 @@
-"""SignalEmitter has to be a drop-in for GObject.Object.
-
-It exists for exactly one reason: `windows/controller.py` is a fork of the
-Linux controller, and the things listening to it — `ui/bridge.py` above all —
-are *shared source*, written against GObject's calling convention. GObject
-passes the emitting object as the first argument to every handler, which is
-why `Bridge._on_health` is declared `(self, _controller, status)`.
-
-Getting that wrong does not crash anything: `SignalEmitter.emit` logs the
-TypeError per handler and carries on, so the app starts, the window opens, the
-first paint works (the page pulls `snapshot()` itself) and then nothing ever
-updates again. These tests are here because the only way that was caught was
-launching the real GUI and reading its log.
-"""
-
 from __future__ import annotations
 
 import sys

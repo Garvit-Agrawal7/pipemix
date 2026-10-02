@@ -1,33 +1,3 @@
-"""The fan-out: one capture source, N render legs.
-
-This is the part with no Linux counterpart. PipeWire gave us a null sink and a
-`module-loopback` per output, and resampled each leg adaptively to keep it in
-step. Raw WASAPI gives us none of that: we capture from one endpoint and write
-the same frames to every other one, and every endpoint runs on its own clock.
-
-Three capture sources, one code path:
-
-* **hub mode** — the source is a real capture endpoint (VB-CABLE's "CABLE
-  Output"), fed by everything Windows plays into "CABLE Input".
-* **leader mode** — the source is a *render* endpoint opened with
-  `AUDCLNT_STREAMFLAGS_LOOPBACK`, so we mirror whatever it plays.
-* **process loopback** — `Engine(pid=...)` captures one app (and its child
-  processes) wherever it plays, so each app can get its own legs.
-
-Between the first two, the endpoint's data flow decides, not a flag the caller
-has to get right.
-
-Every leg is opened with the *source's* mix format plus `AUTOCONVERTPCM`, so
-Windows resamples and remixes into whatever each endpoint actually wants. That
-is what makes "Bluetooth at 48k, speakers at 44.1k" a non-problem, and it is
-why the pump can memcpy rather than convert.
-
-Runnable on its own, before any of the app exists:
-
-    python -m pipemix.windows.wasapi.engine --from <id> --to <id>,<id>
-    python -m pipemix.windows.wasapi.engine --pid <pid> --to <id>,<id>
-"""
-
 from __future__ import annotations
 
 import ctypes

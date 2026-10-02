@@ -1,10 +1,3 @@
-"""
-PipeMix — the pactl backend.
-
-Talks to PipeWire through its PulseAudio compatibility layer. Every pactl call
-in the app goes through here; the Controller and UI never shell out themselves.
-"""
-
 from __future__ import annotations
 
 import json

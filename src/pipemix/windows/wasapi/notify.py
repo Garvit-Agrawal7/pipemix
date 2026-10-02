@@ -1,21 +1,3 @@
-"""Endpoint hotplug → the connect/disconnect callbacks the Controller expects.
-
-This is the Windows replacement for the BlueZ `DeviceMonitor`, and it keeps
-the same surface: set `on_connect` / `on_disconnect`, call `start()`. What it
-reports is an endpoint id rather than a MAC, and it reports every endpoint,
-not just Bluetooth ones — MMDevice does not distinguish, and neither do we.
-
-COM delivers these notifications on an arbitrary MTA thread and forbids doing
-real work there, so the client does nothing but drop an id on a queue; a
-worker thread resolves the endpoint's actual state and fires the callbacks.
-That also collapses the duplicate events Windows emits for one physical
-reconnect (`OnDeviceAdded` and `OnDeviceStateChanged` both fire), since the
-worker only reports a change from the state it last knew.
-
-Registration and unregistration happen on that same MTA worker thread, so
-notifications arrive without anyone needing to pump a message loop.
-"""
-
 from __future__ import annotations
 
 import logging

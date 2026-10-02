@@ -1,17 +1,3 @@
-"""The WASAPI pieces `pycaw` does not declare, plus the constants we need.
-
-Everything else — `IMMDeviceEnumerator`, `IMMDevice`, `IAudioClient`,
-`IPolicyConfig`, the session and endpoint-volume interfaces — comes from
-pycaw, which declares them statically with plain `comtypes`. Only the
-streaming interfaces are missing, because pycaw never reads or writes audio,
-and so is process loopback (`ActivateAudioInterfaceAsync`), which captures a
-single app rather than an endpoint.
-
-Declared by hand rather than through `comtypes.client.GetModule` for the same
-reason pycaw does: `GetModule` writes generated wrappers to a cache at import
-time, which does not survive being frozen by PyInstaller.
-"""
-
 from __future__ import annotations
 
 from ctypes import (

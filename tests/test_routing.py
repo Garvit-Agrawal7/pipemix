@@ -1,9 +1,3 @@
-"""Tests for audio-routing logic in the Controller.
-
-The Controller owns all routing decisions; the UI is dumb. We mock the
-PactlBackend and the GLib main loop so these run headless, no PipeWire needed.
-"""
-
 from __future__ import annotations
 
 import sys

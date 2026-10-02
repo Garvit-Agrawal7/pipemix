@@ -1,21 +1,3 @@
-"""Which thread the endpoint notifications get registered on.
-
-No COM — `pycaw` and `comtypes` are stubbed — because the thing worth pinning
-here is not what WASAPI does, it is which apartment we ask it from.
-
-`comtypes.CoInitialize()` puts the calling thread in a single-threaded
-apartment, and COM delivers calls to an object registered from an STA only
-while that thread pumps a Windows message loop. `main.py --cli` blocks on
-`threading.Event().wait()` and never pumps, so registering on the caller's
-thread meant hotplug notifications were queued and never delivered: a headset
-could disconnect mid-session and nothing noticed. Registration therefore has
-to happen on the monitor's own MTA worker, and this test fails if it moves
-back.
-
-The stubs go in through `monkeypatch.setitem`, so they are torn down again —
-a fake `comtypes` left in `sys.modules` breaks every other test in the run.
-"""
-
 from __future__ import annotations
 
 import importlib

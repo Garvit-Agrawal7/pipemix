@@ -1,11 +1,3 @@
-"""
-PipeMix — BlueZ watcher.
-
-Reports Bluetooth connect/disconnect to the Controller; never touches PipeWire.
-Uses Gio's D-Bus client (part of GLib, which GTK already pulls in), so there is
-no extra dependency and signals arrive on the main loop the app already runs.
-"""
-
 from __future__ import annotations
 
 import logging

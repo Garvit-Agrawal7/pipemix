@@ -1,10 +1,3 @@
-"""Windows session PID dedupe and display-name fallback.
-
-Pure logic — no COM, so this runs on Linux CI too. Everything else in
-`sessions.py` needs a live `IAudioSessionManager2` and is left untested here,
-per the brief.
-"""
-
 from __future__ import annotations
 
 import sys

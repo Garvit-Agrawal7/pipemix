@@ -1,11 +1,3 @@
-"""
-PipeMix — Controller.
-
-The state machine: owns the SharingSession, reacts to Bluetooth events, runs
-crash recovery, drives the backend, and pushes updates to the UI as GObject
-signals. All business logic lives here; the UI only triggers and listens.
-"""
-
 from __future__ import annotations
 
 import functools

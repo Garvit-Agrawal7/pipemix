@@ -1,20 +1,3 @@
-"""Which endpoint Windows plays to — the machine default, and per-app override.
-
-The machine-wide part is `IPolicyConfig::SetDefaultEndpoint`, undocumented but
-stable since Vista and what every volume utility on Windows uses; `pycaw`
-already wraps it as `AudioUtilities.SetDefaultDevice`.
-
-The per-app part has no public API at all. EarTrumpet and SoundVolumeView
-reach it through a private WinRT class,
-`Windows.Media.Internal.AudioPolicyConfig`, activated with
-`RoGetActivationFactory` because it has no CLSID for `CoCreateInstance`. Its
-vtable is not declared as a `comtypes` interface class here — it is a WinRT
-`IInspectable`, and the slots ahead of the two methods we need are undocumented
-and never called, so indexing the vtable by raw offset (as EarTrumpet's own
-interop code and the `winappaudiorouter` project both do) is less code than
-declaring twenty-two placeholder `COMMETHOD`s.
-"""
-
 from __future__ import annotations
 
 import ctypes

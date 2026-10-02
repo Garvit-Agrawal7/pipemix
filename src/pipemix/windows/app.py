@@ -1,12 +1,3 @@
-"""
-PipeMix — GUI startup (Windows).
-
-pywebview picks EdgeChromium here (no `gui=` kwarg needed, unlike the pinned
-`gui="gtk"` on Linux), and runs its own message loop rather than GLib's, so
-`webview.start()` is the only thing blocking — the Controller has no GLib
-main loop dependency to share with it on this platform.
-"""
-
 from __future__ import annotations
 
 import logging

@@ -1,17 +1,3 @@
-"""Tests for Windows crash recovery — the stranded default-output problem.
-
-Starting a session repoints the Windows default output (to CABLE Input in
-hub mode, to the elected leader in leader mode). `Controller.clean_orphans()`
-is a no-op for orphaned sinks on Windows (`find_orphans()` always returns
-`[]`), but it is also where crash recovery for the stranded default lives:
-`start_sharing` persists `prev_default` to config before changing the
-default, and `stop_sharing` clears it after a clean restore, so a
-`prev_default` still on disk at startup means the last run died mid-session.
-
-Pure logic, no COM — stubs the backend the same way `test_windows_controller.py`
-does, so this runs on Linux CI too.
-"""
-
 from __future__ import annotations
 
 import sys

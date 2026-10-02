@@ -1,12 +1,3 @@
-"""
-The bridge must never block its caller.
-
-pywebview's evaluate_js queues the script onto the GLib main loop and then
-blocks until the result comes back. BlueZ connect and disconnect handlers run
-on that same main loop, so a push that waited inline would deadlock the whole
-UI. These tests pin that down without needing a window.
-"""
-
 from __future__ import annotations
 
 import json

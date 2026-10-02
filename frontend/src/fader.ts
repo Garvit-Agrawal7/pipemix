@@ -1,11 +1,3 @@
-/**
- * Shared fader mechanics.
- *
- * In this design a row IS its own volume control, so both the device rows and
- * the master row need the same three things: pointer-x to a percentage, the
- * keyboard equivalents, and a throttle.
- */
-
 import { useEffect, useRef } from "react";
 import type { KeyboardEvent } from "react";
 

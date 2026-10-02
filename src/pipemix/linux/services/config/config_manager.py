@@ -1,10 +1,3 @@
-"""Device names and presets.
-
-Linux stores config at ~/.config/pipemix/config.json; Windows at
-%APPDATA%\\PipeMix\\config.json. `default_log_dir` resolves the matching log
-directory for `main.py` on each platform.
-"""
-
 from __future__ import annotations
 
 import json

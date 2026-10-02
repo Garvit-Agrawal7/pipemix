@@ -1,19 +1,3 @@
-"""Tests for the Windows Controller — leader re-election and hotplug.
-
-Stubs the notification client and the backend the same way `test_routing.py`
-stubs GObject and PactlBackend: the Controller module itself imports no GTK
-or COM at module scope (only `wasapi.notify`, which is real pycaw/comtypes
-and safe to construct — it only touches COM inside `start()`/`stop()`, never
-in `__init__`), so no `sys.modules` stubbing is needed. `Controller.monitor`
-is swapped for a `MagicMock` before `start()` so no real device enumerator is
-ever registered.
-
-Everything carried over verbatim from `linux/controller.py` (the lock, the
-solo-device volume rule, presets, `_prepare`/`_adopt`) is already covered by
-`test_routing.py`; these tests cover what changed: stable endpoint ids with
-no retry chain, and leader re-election.
-"""
-
 from __future__ import annotations
 
 import sys

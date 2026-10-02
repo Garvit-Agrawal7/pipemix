@@ -1,13 +1,3 @@
-"""
-PipeMix — the WASAPI backend.
-
-Same surface as `PactlBackend`, so the Controller calls either one identically.
-Underneath, there is no PipeWire hub sink — `wasapi/engine.py` is the fan-out,
-capturing from one source and writing to N render legs. Where a PipeWire
-concept has no Windows meaning the method stays, made trivially correct rather
-than deleted, so the Controller never has to special-case the platform.
-"""
-
 from __future__ import annotations
 
 import logging
