@@ -13,7 +13,8 @@ BUFFER_MS     = 200  # endpoint buffer we ask Windows for, source and legs alike
 TARGET_MS     = 30   # how much we keep queued in each endpoint
 DRIFT_MS      = 20   # how far a leg may fall behind before we drop frames
 DRIFT_KEEP_MS = 5    # what we leave queued after dropping
-LEG_RETRY_S   = 1.0  # how long a leg that failed to open waits before the next try
+LEG_RETRY_S   = 1.0  # how long a leg that failed to open (or failed again right after opening) waits
+OPENER_JOIN_S = 2.0  # how long _close waits for a busy opener before abandoning it
 
 
 class _Leg:
@@ -28,7 +29,7 @@ class _Leg:
     """
 
     def __init__(self, device_id: str, client, render, frames: int, bpf: int, rate: int,
-                 period_ms: float = 10.0) -> None:
+                 period_ms: float = 10.0, *, src_period_ms: float = 10.0) -> None:
         self.id     = device_id
         self.client = client
         self.render = render
@@ -37,7 +38,8 @@ class _Leg:
         self.target = int(rate * TARGET_MS / 1000)  # padding we aim for, in frames
         self.prime  = int(rate * (period_ms + POLL_MS) / 1000)  # silence cushion for a dry endpoint
         self.period = int(rate * period_ms / 1000)
-        self.target = max(self.target, self.prime + self.period)  # leave room for data after the cushion
+        # Data arrives a source packet at a time: leave room for it after the cushion.
+        self.target = max(self.target, self.prime + max(self.period, int(rate * src_period_ms / 1000)))
         self.fifo   = bytearray()
         self.high   = int(rate * DRIFT_MS / 1000) * bpf
         self.keep   = int(rate * DRIFT_KEEP_MS / 1000) * bpf
@@ -46,8 +48,10 @@ class _Leg:
         self.fifo += data
 
     def write(self) -> None:
+        if not self.fifo:  # nothing to prime, top up or trim: skip the COM call
+            return
         padding = self.client.GetCurrentPadding()
-        if padding == 0 and self.fifo:
+        if padding == 0:
             from pipemix.windows.wasapi.com import AUDCLNT_BUFFERFLAGS_SILENT
 
             # Only what queued audio can't cover: padding a stall's backlog with
@@ -133,6 +137,7 @@ class Engine:
         self._wanted: set[str] = set()
         self._legs: dict[str, _Leg] = {}
         self._retry_at: dict[str, float] = {}  # monotonic time a failed leg may be tried again
+        self._adopted_at: dict[str, float] = {}  # monotonic time each leg was last adopted
         self._opening: set[str] = set()        # legs handed to the opener, not back yet
         self._requests: queue.Queue = queue.Queue()  # device ids to open; None stops the opener
         self._results: queue.Queue = queue.Queue()   # (device_id, _Leg or Exception)
@@ -148,6 +153,7 @@ class Engine:
         self._fmt     = None
         self._bpf     = 0
         self._rate    = 0
+        self._src_period_ms = 10.0  # capture packet period; legs size their target to it
 
     # -- public ---------------------------------------------------------
 
@@ -230,6 +236,10 @@ class Engine:
                     result = self._open_leg(device_id)
                 except Exception as e:
                     result = e
+                if self._stop.is_set():
+                    if not isinstance(result, Exception):
+                        self._close_leg(result)  # the pump may be past its drain in _close
+                    return
                 self._results.put((device_id, result))
                 result = None  # don't keep a COM object or traceback alive until the next open
         finally:
@@ -286,6 +296,7 @@ class Engine:
         self._capture = self._client.GetService(
             IAudioCaptureClient._iid_
         ).QueryInterface(IAudioCaptureClient)
+        self._src_period_ms = _period_ms(self._client)  # process loopback: falls back to 10
         self._client.Start()
 
     def _open_process(self) -> None:
@@ -373,7 +384,7 @@ class Engine:
         period_ms = _period_ms(client)
         log.info("Engine leg open: %s", device_id)
         return _Leg(device_id, client, render, client.GetBufferSize(), self._bpf, self._rate,
-                    period_ms=period_ms)
+                    period_ms=period_ms, src_period_ms=self._src_period_ms)
 
     def _reconcile(self) -> None:
         with self._lock:
@@ -394,6 +405,7 @@ class Engine:
                 self._retry_at[device_id] = now + LEG_RETRY_S
             elif device_id in wanted and device_id not in self._legs:
                 self._legs[device_id] = result
+                self._adopted_at[device_id] = now
                 self._retry_at.pop(device_id, None)
             else:
                 self._close_leg(result)  # unwanted while it was opening
@@ -438,18 +450,22 @@ class Engine:
                 leg.write()
             except Exception as e:
                 # Invalidated without leaving (format change, Bluetooth profile switch):
-                # drop the leg; it stays wanted, so reconcile reopens it once a second.
+                # drop the leg; it stays wanted, so reconcile reopens it at once, or
+                # after LEG_RETRY_S if it failed straight after its last reopen.
                 log.warning("Engine leg %s failed, reopening: %s", device_id, e)
                 self._close_leg(self._legs.pop(device_id))
+                now = time.monotonic()
+                if now - self._adopted_at.get(device_id, -LEG_RETRY_S) < LEG_RETRY_S:
+                    self._retry_at[device_id] = now + LEG_RETRY_S
 
     def _close(self) -> None:
         if self._opener is not None:
             self._requests.put(None)
             # ponytail: a wedged driver call can't be cancelled; past this we
             # abandon the opener (daemon) and leak whatever it opens.
-            self._opener.join(timeout=2)
+            self._opener.join(timeout=OPENER_JOIN_S)
             if self._opener.is_alive():
-                log.warning("Engine opener still busy after 2 s, abandoning it")
+                log.warning("Engine opener still busy after %.1f s, abandoning it", OPENER_JOIN_S)
             self._opener = None
         while True:
             try:
@@ -487,6 +503,9 @@ if __name__ == "__main__":
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
+    import sys
+
+    sys.setswitchinterval(0.001)  # as pipemix.windows.main does, so probes measure what the app gets
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s"
     )
