@@ -29,6 +29,10 @@ export default function App() {
   const [quitting, setQuitting] = useState(false);
   const [open, setOpen] = useState(false);
 
+  // A Mac older than 14.2 cannot tap another app's audio, so that backend
+  // ("aggregate") has no Apps screen to offer.
+  const perApp = health.engine !== "aggregate";
+
   // Escape collapses the rail; a confirm showing swallows it first.
   useEffect(() => {
     if (!open) return;
@@ -63,6 +67,9 @@ export default function App() {
           setHealth(payload as BackendStatus);
         } else if (event === "streams") {
           setStreams(payload as Stream[]);
+        } else if (event === "master") {
+          // A volume key moved it (macOS, while sharing).
+          setMaster(payload as number);
         }
       },
     };
@@ -115,17 +122,19 @@ export default function App() {
           <span className="rlabel">Outputs</span>
         </button>
 
-        <button
-          className={screen === "apps" ? "railbtn on" : "railbtn"}
-          aria-label={streams.length > 0 ? `Apps, ${streams.length} playing` : "Apps"}
-          aria-current={screen === "apps" ? "page" : undefined}
-          title="Apps"
-          onClick={() => setScreen("apps")}
-        >
-          <IconApps />
-          <span className="rlabel">Apps</span>
-          {streams.length > 0 && <span className="badge">{streams.length}</span>}
-        </button>
+        {perApp && (
+          <button
+            className={screen === "apps" ? "railbtn on" : "railbtn"}
+            aria-label={streams.length > 0 ? `Apps, ${streams.length} playing` : "Apps"}
+            aria-current={screen === "apps" ? "page" : undefined}
+            title="Apps"
+            onClick={() => setScreen("apps")}
+          >
+            <IconApps />
+            <span className="rlabel">Apps</span>
+            {streams.length > 0 && <span className="badge">{streams.length}</span>}
+          </button>
+        )}
 
         <div className="spacer" />
 
@@ -173,7 +182,7 @@ export default function App() {
           </div>
         )}
         {ready &&
-          (screen === "outputs" ? (
+          (screen === "outputs" || !perApp ? (
             <Outputs
               devices={devices}
               state={state}

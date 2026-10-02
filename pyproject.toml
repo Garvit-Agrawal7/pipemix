@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "pipemix"
 version = "0.3.0"
-description = "Route audio to multiple output devices simultaneously on Linux"
+description = "Route audio to multiple output devices simultaneously on Linux, Windows and macOS"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
@@ -17,13 +17,14 @@ license = { text = "GPL-3.0-or-later" }
 dependencies = [
     "pycaw>=20240210; sys_platform == 'win32'",
     # Linux gets pywebview from the distro alongside PyGObject; on Windows
-    # there is no system package to get it from, and the GUI will not start
-    # without it.
-    "pywebview>=5.0; sys_platform == 'win32'",
+    # and macOS there is no system package to get it from, and the GUI will
+    # not start without it. macOS needs nothing else: Core Audio is reached
+    # through ctypes.
+    "pywebview>=5.0; sys_platform == 'win32' or sys_platform == 'darwin'",
 ]
 
 [project.scripts]
-pipemix = "pipemix.linux.main:main"
+pipemix = "pipemix.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pipemix"]

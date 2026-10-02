@@ -1,7 +1,8 @@
 """Device names and presets.
 
 Linux stores config at ~/.config/pipemix/config.json; Windows at
-%APPDATA%\\PipeMix\\config.json. `default_log_dir` resolves the matching log
+%APPDATA%\\PipeMix\\config.json; macOS at
+~/Library/Application Support/PipeMix/config.json. `default_log_dir` resolves the matching log
 directory for `main.py` on each platform.
 """
 
@@ -20,6 +21,8 @@ def _default_config_path() -> Path:
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
         return Path(appdata) / "PipeMix" / "config.json"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "PipeMix" / "config.json"
     return Path.home() / ".config" / "pipemix" / "config.json"
 
 
@@ -28,6 +31,8 @@ def default_log_dir() -> Path:
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
         return Path(local_appdata) / "PipeMix" / "logs"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Logs" / "PipeMix"
     return Path.home() / ".local" / "share" / "pipemix"
 
 
@@ -37,7 +42,7 @@ class ConfigManager:
         self.path = path or _default_config_path()
         self.data: dict = {
             "devices": {}, "presets": {}, "last_preset": None, "prev_default": None,
-            "pinned_apps": [],
+            "pinned_apps": [], "master": None,
         }
         self.load()
 
@@ -61,6 +66,7 @@ class ConfigManager:
             "last_preset": raw.get("last_preset"),
             "prev_default": raw.get("prev_default"),
             "pinned_apps": raw.get("pinned_apps", []),
+            "master": raw.get("master"),  # last master level; only macOS keeps it yet
         }
 
     def save(self) -> None:

@@ -111,7 +111,7 @@ export default function Apps(props: AppsProps) {
                     <div className="lvnm">{s.name}</div>
                     <div className={s.stuck ? "sid warn" : "sid"}>
                       {s.stuck
-                        ? `didn't switch — restart ${s.name} to apply`
+                        ? s.hint ?? `didn't switch — restart ${s.name} to apply`
                         : `stream ${s.id} · ${pin ? "pinned by you" : "following the session"}`}
                     </div>
                   </div>
