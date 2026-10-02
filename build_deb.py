@@ -49,11 +49,9 @@ def main():
     if logo_src.exists():
         shutil.copy(logo_src, pkg_dir / "usr" / "share" / "icons" / "hicolor" / "512x512" / "apps" / "pipemix.png")
 
-    # pipewire-pulse, not pulseaudio-utils alone: plain PulseAudio satisfies
-    # pactl but the app refuses to run on it. pipewire-bin (pw-dump) is already
-    # pulled in through pipewire-pulse, but the app now runs it directly. The
-    # gir1.2-* packages are pywebview's GTK backend, which python3-webview does
-    # not pull in.
+    # pipewire-pulse, not pulseaudio-utils: the app refuses plain PulseAudio.
+    # pipewire-bin (pw-dump, run directly) comes with pipewire-pulse. gir1.2-* is
+    # pywebview's GTK backend, which python3-webview doesn't pull in.
     control_content = f"""Package: pipemix
 Version: {version}
 Section: sound
@@ -95,8 +93,7 @@ StartupNotify=true
     with open(pkg_dir / "usr" / "share" / "applications" / "pipemix.desktop", "w", encoding="utf-8") as f:
         f.write(desktop_content)
 
-    # Required by Debian policy, and the GPL requires the
-    # licence text to travel with the binary
+    # Debian policy and the GPL require the licence to ship with the binary
     doc_dir = pkg_dir / "usr" / "share" / "doc" / "pipemix"
     os.makedirs(doc_dir, exist_ok=True)
     header = (

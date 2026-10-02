@@ -50,10 +50,8 @@ export default function Apps(props: AppsProps) {
       onError(msg(e));
       return;
     }
-    // Some apps only pick an output when they open their audio, so the route
-    // can be accepted here and still not take effect. Windows has no live
-    // stream notifications, so a delayed re-check is the only way the row
-    // learns that.
+    // Some apps pick an output only when opening audio, and Windows has no live
+    // stream notifications, so re-check later to learn whether the route took.
     setTimeout(() => {
       call<Stream[]>("list_streams")
         .then((fresh) => onStreams(() => fresh))

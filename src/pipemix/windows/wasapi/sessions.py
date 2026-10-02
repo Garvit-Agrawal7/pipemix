@@ -21,12 +21,9 @@ def _stream_name(display_name: str | None, process_name: str | None, pid: int) -
 def _package_name(exe: str) -> str | None:
     """The Store package's display name for an exe inside one, else None.
 
-    Packaged apps often play through a helper (Apple Music's audio comes from
-    AMPLibraryAgent.exe, launched by COM, not by AppleMusic.exe), so the
-    process name means nothing to the user but the package name does. The
-    folder under WindowsApps *is* the package full name; the manifest's
-    DisplayName is usually an ms-resource that only SHLoadIndirectString
-    resolves.
+    Packaged apps often play through a helper (Apple Music via AMPLibraryAgent.exe),
+    so the package name means more than the process name. The WindowsApps folder is
+    the package full name; DisplayName is usually an ms-resource for SHLoadIndirectString.
     """
     try:
         path = PureWindowsPath(exe)
@@ -66,12 +63,9 @@ def _process_label(process, exe: str | None) -> str | None:
 
 
 def _dedupe_sessions(records: list[dict], own_pid: int) -> list[dict]:
-    """First endpoint wins; the system-sounds session (pid 0) and our own
-    process are filtered out, the way the Linux backend filters its own
-    combine-sink plumbing out of `list_streams`.
+    """First endpoint wins; system sounds (pid 0) and our own process are dropped.
 
-    `records` are plain dicts with at least a "pid" key, in enumeration
-    order — endpoint by endpoint, session by session within each endpoint.
+    `records` are dicts with at least "pid", in enumeration order.
     """
     seen: set[int] = set()
     out = []
@@ -85,9 +79,8 @@ def _dedupe_sessions(records: list[dict], own_pid: int) -> list[dict]:
 
 
 def _session_records() -> list[dict]:
-    """One record per (endpoint, session) pair, across every active render
-    endpoint — the raw material `list_streams` dedupes.
-    """
+    """One record per (endpoint, session) across active render endpoints, for
+    `list_streams` to dedupe."""
     import comtypes
     from pycaw.api.audiopolicy import IAudioSessionControl2, IAudioSessionManager2
     from pycaw.constants import DEVICE_STATE, EDataFlow
@@ -115,9 +108,8 @@ def _session_records() -> list[dict]:
                 "endpoint": device.id,
                 "active": ctl.GetState() == 1,  # AudioSessionStateActive
             })
-    # An app keeps idle sessions on endpoints it played to before; the one
-    # actually playing has to win the dedupe, or its label and mute go to a
-    # stale session on the wrong device.
+    # An app keeps idle sessions on old endpoints; the playing one must win the
+    # dedupe, or its label and mute come from a stale session.
     records.sort(key=lambda r: not r["active"])
     return records
 

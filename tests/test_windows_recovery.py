@@ -37,9 +37,8 @@ def _backend(engine: str = "hub") -> MagicMock:
 
 
 def _ctrl(tmp_path: Path, backend=None, config: ConfigManager | None = None) -> Controller:
-    """Builds the Controller without calling `start()` — these tests drive
-    `clean_orphans()`/`start_sharing()`/`stop_sharing()` directly so the
-    persisted config can be inspected between each step."""
+    """The Controller without `start()`, so tests drive it step by step and can
+    inspect the persisted config in between."""
     b = backend or _backend()
     cfg = config or ConfigManager(tmp_path / "config.json")
     c = Controller(b, cfg)

@@ -31,8 +31,7 @@ def _entry() -> str:
         if (root / "index.html").is_file():
             return str(root / "index.html")
 
-    # Returning a path that does not exist gets rendered as an unhelpful
-    # "URL not found" by pywebview's internal file server. Say what is wrong.
+    # pywebview would only say "URL not found" for a missing path; say what is wrong.
     raise FileNotFoundError(
         "No built frontend found. Looked in: "
         + ", ".join(str(c) for c in candidates)

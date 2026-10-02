@@ -9,11 +9,9 @@ from pathlib import Path
 
 
 def find_iscc() -> Path | None:
-    """ISCC.exe: an explicit override first, then PATH, then the default install location.
+    """ISCC.exe: the ISCC_PATH override first, then PATH, then the default install location.
 
-    Inno Setup does not put ISCC.exe on PATH by default, and there is no
-    single correct install path across machines -- ISCC_PATH lets a user
-    point at whatever they actually have without us hardcoding one.
+    Inno Setup doesn't add itself to PATH and install paths vary, hence ISCC_PATH.
     """
     override = os.environ.get("ISCC_PATH")
     if override:
@@ -44,8 +42,7 @@ def main():
         print(f"[ERROR] VB-CABLE package not found: {vb_cable_zip}")
         sys.exit(1)
 
-    # Single source of truth for the version; mirrors build_deb.py so the
-    # .exe and the .deb can never drift apart on a release.
+    # Single source of truth for the version, shared with build_deb.py.
     with open(project_root / "pyproject.toml", "rb") as f:
         version = tomllib.load(f)["project"]["version"]
 

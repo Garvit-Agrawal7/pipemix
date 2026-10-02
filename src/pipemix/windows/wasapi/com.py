@@ -13,8 +13,8 @@ AUDCLNT_SHAREMODE_SHARED = 0
 
 AUDCLNT_STREAMFLAGS_LOOPBACK            = 0x00020000
 AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY = 0x08000000
-# Lets a leg run at a rate and channel count that differ from what we feed it,
-# which is the whole reason "Bluetooth at 48k, speakers at 44.1k" is a non-problem.
+# Lets a leg's rate and channel count differ from what we feed it (Bluetooth 48k,
+# speakers 44.1k).
 AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM      = 0x80000000
 
 # IAudioCaptureClient::GetBuffer flags
@@ -122,8 +122,8 @@ class PROPVARIANT_BLOB(Structure):
 def loopback_params(pid: int) -> tuple[AUDIOCLIENT_ACTIVATION_PARAMS, PROPVARIANT_BLOB]:
     """Activation params capturing `pid` and its child processes.
 
-    Returns the params too, because the PROPVARIANT only points at them: the
-    caller has to keep both alive until activation completes.
+    Returns the params too: the PROPVARIANT only points at them, so keep both
+    alive until activation completes.
     """
     params = AUDIOCLIENT_ACTIVATION_PARAMS(
         AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
@@ -136,10 +136,9 @@ def loopback_params(pid: int) -> tuple[AUDIOCLIENT_ACTIVATION_PARAMS, PROPVARIAN
 
 
 def loopback_format():
-    """The format a process-loopback client is initialized with.
+    """The process-loopback client's format: 48 kHz stereo float.
 
-    Its `GetMixFormat` is not supported, so we pick one: 48 kHz stereo float.
-    `AUTOCONVERTPCM` on the source and on every leg makes the choice harmless.
+    Its `GetMixFormat` is unsupported; `AUTOCONVERTPCM` everywhere makes any choice work.
     """
     from pycaw.api.audioclient import WAVEFORMATEX
 

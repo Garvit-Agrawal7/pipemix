@@ -14,8 +14,7 @@ from pipemix.windows.controller import Controller
 
 
 def _dev(dev_id: str, name: str = "Dev", connected: bool = True) -> AudioDevice:
-    """A Windows endpoint: id *is* sink, per the brief — there is no separate
-    resolution step."""
+    """A Windows endpoint: id *is* sink, with no resolution step."""
     return AudioDevice(id=dev_id, name=name, sink=dev_id if connected else None,
                         kind=DeviceKind.BLUETOOTH, connected=connected)
 
@@ -41,10 +40,8 @@ def _backend(engine: str = "hub") -> MagicMock:
 
 
 def _leader_backend() -> MagicMock:
-    """A leader-mode backend: `create_sink` elects the first device as
-    leader (mirrors `WasapiBackend._elect_leader`'s fallback), excludes it
-    from the legs, and `destroy_sink` clears the election — same lifecycle
-    as the real backend."""
+    """A leader-mode backend with the real lifecycle: `create_sink` elects the first
+    device and excludes it from the legs; `destroy_sink` clears the election."""
     b = MagicMock()
     b.health.return_value = BackendStatus(BackendHealth.OK, "ok", engine="leader")
     b.find_orphans.return_value = []
@@ -180,9 +177,8 @@ def test_on_connect_readopts_without_a_retry_chain(tmp_path: Path) -> None:
     assert ctrl.devices[d2.id].connected is False
     assert ctrl.session.state == SessionState.ACTIVE
 
-    # The endpoint is back — list_outputs reports it active on the very next
-    # call, which is all `_on_connect` gets to work with; a Windows endpoint
-    # id is stable, so this must resolve in one shot, not a retry loop.
+    # list_outputs reports the endpoint at once and its id is stable, so
+    # `_on_connect` must resolve it in one shot, not a retry loop.
     b.list_outputs.return_value = [
         AudioDevice(id=d1.id, name=d1.name, sink=d1.id, kind=DeviceKind.BLUETOOTH, connected=True),
         AudioDevice(id=d2.id, name=d2.name, sink=d2.id, kind=DeviceKind.BLUETOOTH, connected=True),
@@ -378,9 +374,8 @@ def test_route_stream_records_and_clears_pinned_app(tmp_path: Path) -> None:
 
 
 def test_stop_sharing_unpins_a_live_pinned_app(tmp_path: Path) -> None:
-    # Leader mode, not hub: under contract D a hub-mode route_stream with an
-    # active session no longer pins at all (it fans out via overrides), so
-    # this pin-lifecycle test moves to the mode that still pins.
+    # Leader mode: under contract D a hub session's route_stream no longer pins,
+    # so this pin-lifecycle test uses the mode that still does.
     b = _leader_backend()
     b.list_streams.return_value = [
         {"id": 42, "name": "App", "sink": "EP1", "mute": False, "exe": "C:\\App.exe"},
@@ -458,13 +453,11 @@ def test_start_and_stop_push_devices_so_the_page_sees_targets(tmp_path: Path) ->
     assert pushed[-1] == set()
 
 
-# -- Contract D: per-app capture in hub mode (PER-APP-ROUTING.md Phase 1) --
+# -- Contract D: per-app capture in hub mode --
 #
-# In hub mode a session no longer pins apps at all: route_stream just records
-# which device ids an app wants (`overrides`), and `_sync_apps` reconciles
-# that against `backend.set_app_routes({pid: [device ids]})` on its own —
-# directly (tests below call it), or off the 1 s poll thread while a hub
-# session is active. Leader mode is untouched and keeps the pin path.
+# Hub sessions never pin: route_stream records `overrides`, and `_sync_apps`
+# reconciles them via `backend.set_app_routes` (called directly below, or by the
+# 1 s poll). Leader mode keeps the pin path.
 
 def test_hub_route_stream_fans_out_without_pinning(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(controller_module, "APP_POLL_S", 999)
@@ -581,8 +574,7 @@ def test_stuck_in_hub_mode_ignores_overrides(tmp_path: Path, monkeypatch) -> Non
     ]
     ctrl.route_stream(42, [d2.id])                       # overridden to EP2 only
 
-    # Still playing into the hub, which is exactly right in hub mode — the
-    # override is a capture-side routing choice, not where the app must play.
+    # Playing into the hub is right in hub mode: the override is capture-side.
     assert ctrl.streams()[0]["stuck"] is False
 
     b.list_streams.return_value[0]["endpoint"] = "EP1"   # bypassed the hub entirely
@@ -618,9 +610,8 @@ def test_hub_route_stream_clears_a_leftover_pinned_apps_entry(tmp_path: Path, mo
     d1, d2 = _dev("EP1"), _dev("EP2")
     ctrl.devices = {d.id: d for d in (d1, d2)}
     ctrl.start_sharing([d1, d2])
-    # A pin left behind by a previous idle/leader-mode run, keyed by exe —
-    # `streams()` would normally learn `_exe` itself, but this test only
-    # needs the leftover-pin-clearing branch, so it seeds it directly.
+    # A leftover pin from an idle/leader-mode run, keyed by exe; seeded directly
+    # since only the pin-clearing branch matters here.
     ctrl.config.data["pinned_apps"] = ["C:\\App.exe"]
     ctrl._exe[42] = "C:\\App.exe"
 

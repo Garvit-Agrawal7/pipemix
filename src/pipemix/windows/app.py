@@ -20,9 +20,8 @@ DEV_SERVER = "http://localhost:5173"
 def _roots(relative: str) -> list[Path]:
     """Every place a shipped file could live, most-local first.
 
-    From `src/pipemix/windows/app.py` the repo root is `parents[3]`.
-    PyInstaller flattens `src/` away, so inside a frozen build `parents[2]`
-    *is* the bundle root — hence both, in that order.
+    A checkout's root is `parents[3]`; PyInstaller flattens `src/`, making
+    `parents[2]` the frozen bundle's root.
     """
     here = Path(__file__).resolve()
     return [
@@ -38,8 +37,7 @@ def _entry() -> str:
         if (root / "index.html").is_file():
             return str(root / "index.html")
 
-    # A path that does not exist comes out of pywebview's internal file server
-    # as a bare "URL not found" against localhost, which tells nobody anything.
+    # pywebview would only say "URL not found" for a missing path; say what is wrong.
     raise FileNotFoundError(
         "No built frontend found. Looked in: "
         + ", ".join(str(r) for r in _roots("frontend/dist"))

@@ -100,10 +100,8 @@ class DeviceMonitor:
             return device_id in self._active  # removed: trust what we knew
 
     def _drain(self) -> None:
-        # This thread owns the enumerator and the callback registration, so
-        # COM delivers notifications straight here with no message pump in the
-        # picture. It is also where the ids get resolved and where everything
-        # downstream (rebuilding legs) runs, which is all real COM work.
+        # This thread owns the enumerator and registration, so COM delivers here
+        # without a message pump; id resolution and leg rebuilds (COM work) run here too.
         comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
         try:
             try:
