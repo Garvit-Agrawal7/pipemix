@@ -164,6 +164,7 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, quit)
     stop_event.wait()
+    ctrl.backend.close()  # bounded: stopped engines close their streams before exit
 
 
 if __name__ == "__main__":

@@ -640,3 +640,36 @@ def test_mmcss_handle_is_reverted_on_stop(monkeypatch):
 def test_mmcss_failure_does_not_stop_the_engine(monkeypatch, avrt):
     _run_engine(monkeypatch, avrt)
     assert avrt.reverted == []
+
+
+# -- stop(wait=False) only signals; the pump closes itself -----------------
+
+def test_stop_without_wait_returns_at_once_and_the_pump_closes_itself(monkeypatch):
+    import comtypes
+
+    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(avrt=_Avrt()), raising=False)
+    monkeypatch.setattr(comtypes, "CoInitializeEx", lambda *a: None)
+    monkeypatch.setattr(comtypes, "CoUninitialize", lambda: None)
+    e = Engine("src")
+    for name in ("_open_source", "_reconcile", "_pump"):
+        monkeypatch.setattr(e, name, lambda: None)
+    closing, release, closed_on = threading.Event(), threading.Event(), []
+
+    def slow_close():
+        closing.set()
+        assert release.wait(1)
+        closed_on.append(threading.current_thread())
+    monkeypatch.setattr(e, "_close", slow_close)
+    e.start()
+    pump = e._thread
+
+    t0 = time.perf_counter()
+    e.stop(wait=False)
+    assert time.perf_counter() - t0 < 0.05
+    assert closing.wait(1)              # the pump saw the signal on its own
+    assert pump.is_alive()              # and is still closing: nobody waited
+
+    threading.Timer(0.1, release.set).start()
+    e.stop()                            # the default still joins
+    assert not pump.is_alive()
+    assert closed_on == [pump]          # legs and source closed on the pump thread

@@ -106,6 +106,7 @@ class Controller(SignalEmitter):
                 self._sweep_pins(self.backend.list_streams())
             except Exception as e:
                 log.warning("Failed to sweep leftover per-app pins: %s", e)
+        self.backend.close()  # bounded: lets stopped engines close their streams before exit
         self.monitor.stop()
 
     def clean_orphans(self) -> None:
@@ -385,15 +386,18 @@ class Controller(SignalEmitter):
             })
         return out
 
-    def _sync_apps(self) -> None:
+    def _sync_apps(self, stop: threading.Event | None = None) -> None:
         """Hand the backend each app playing into the hub with its outputs (override,
         else every session device); push the app list if it changed. Hub mode only.
         Never raises. A paused app stays routed for APP_IDLE_S, so resuming is instant.
         The routes are worked out under `_lock`, but applied outside it: starting an
-        app's capture can block for seconds. Called from the poll thread only."""
+        app's capture can block for seconds. Called from the poll thread only, with its
+        `stop`: a poll stopped meanwhile must not sync (or push) the next session."""
         # ponytail: 1 s poll; IAudioSessionNotification if the delay before a new app is heard matters.
         try:
             with self._lock:
+                if stop is not None and stop.is_set():
+                    return
                 if not (self.session.is_active and self.session.sink
                         and self.backend.health().engine == "hub"):
                     self._app_active.clear()
@@ -424,7 +428,11 @@ class Controller(SignalEmitter):
                     self._last_streams = out
             self.backend.set_app_routes(routes, gen=gen)
             if changed:
-                self.emit("streams-changed", out)
+                # set_app_routes can block; a restart meanwhile has pushed its own list.
+                with self._lock:
+                    if stop is not None and stop.is_set():
+                        return
+                    self.emit("streams-changed", out)
         except Exception as e:
             log.warning("Failed to sync per-app routes: %s", e)
 
@@ -442,7 +450,7 @@ class Controller(SignalEmitter):
 
     def _poll_apps(self, stop: threading.Event, wake: threading.Event) -> None:
         while not stop.is_set():
-            self._sync_apps()
+            self._sync_apps(stop)
             wake.wait(APP_POLL_S)
             wake.clear()
 

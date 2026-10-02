@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from pathlib import Path
 from types import ModuleType
 
@@ -68,7 +69,8 @@ class _FakeEngine:
         self.source_id = source_id
         self.pid = pid
         self.started = False
-        self.stopped = False
+        self.stopped = False  # told to stop (any stop call)
+        self.joined = False   # a joining stop() returned
         self._legs: list[str] = []
         _FakeEngine.instances.append(self)
 
@@ -77,8 +79,10 @@ class _FakeEngine:
             raise RuntimeError(f"could not activate process loopback for pid {self.pid}")
         self.started = True
 
-    def stop(self) -> None:
+    def stop(self, wait: bool = True) -> None:
         self.stopped = True
+        if wait:
+            self.joined = True
 
     def set_legs(self, device_ids) -> None:
         self._legs = list(device_ids)
@@ -275,7 +279,7 @@ def test_destroy_sink_never_raises_when_engine_stop_fails(monkeypatch):
     b = _backend(monkeypatch, hub=False, default="original")
     sink = b.create_sink([_dev("dev_a")])
 
-    def _boom():
+    def _boom(*_a, **_k):
         raise RuntimeError("endpoint already gone")
     sink.module.stop = _boom
 
@@ -500,13 +504,15 @@ def test_destroy_sink_never_raises_when_an_app_engine_stop_fails(monkeypatch):
     b.set_app_routes({1: ["dev_a"], 2: ["dev_a"]})
     engine1, engine2 = _FakeEngine.instances
 
-    def _boom():
+    def _boom(*_a, **_k):
         raise RuntimeError("endpoint already gone")
     engine1.stop = _boom
 
     b.destroy_sink(sink)  # must not raise
 
     assert engine2.stopped is True
+    b.close(1)
+    assert engine2.joined is True
 
 
 def test_set_legs_on_a_hub_sink_with_no_engine_module_works(monkeypatch):
@@ -534,13 +540,16 @@ class _SlowEngine(_FakeEngine):
         _SlowEngine.release.wait(1)
         super().start()
 
-    def stop(self) -> None:
+    def stop(self, wait: bool = True) -> None:
         lock = _SlowEngine.backend._apps_lock
         free = lock.acquire(blocking=False)
         if free:
             lock.release()
-        _SlowEngine.stop_saw_lock_free.append(free)
-        super().stop()
+        # Only the signalling calls: a reaper's join may race _stop_engines
+        # registering it under _apps_lock, which is harmless.
+        if not wait:
+            _SlowEngine.stop_saw_lock_free.append(free)
+        super().stop(wait)
 
 
 def _slow_session(monkeypatch) -> WasapiBackend:
@@ -601,6 +610,7 @@ def test_engine_stop_runs_with_no_backend_lock_held(monkeypatch):
     b.set_app_routes({1: ["dev_a"], 2: ["dev_a"]})
     b.set_app_routes({2: ["dev_a"]})              # pid 1 dropped -> stop
     b.destroy_sink(VirtualSink(None, "cable_in"))  # pid 2 -> stop
+    b.close(1)                                     # and both reapers' joins
 
     assert _SlowEngine.stop_saw_lock_free == [True, True]
 
@@ -636,3 +646,89 @@ def test_set_legs_sent_once_while_engine_legs_lag(monkeypatch):
     for _ in range(3):
         b.set_app_routes({1: ["dev_a"]})
     assert calls == [["dev_a"]]
+
+
+# -- Stopping never waits for a pump to exit: engines are signalled, then reaped --
+
+class _SlowJoinEngine(_FakeEngine):
+    """The joining stop() blocks until `release` is set, like a wedged pump."""
+    release = threading.Event()
+
+    def stop(self, wait: bool = True) -> None:
+        if wait:
+            _SlowJoinEngine.release.wait(1)
+        super().stop(wait)
+
+
+def _slow_join(monkeypatch, *, hub: bool = True) -> WasapiBackend:
+    b = _backend(monkeypatch, hub=hub, default="original")
+    monkeypatch.setattr(backend_mod, "Engine", _SlowJoinEngine)
+    _SlowJoinEngine.release = threading.Event()
+    return b
+
+
+def test_destroy_sink_signals_every_engine_and_leaves_the_join_to_a_reaper(monkeypatch):
+    b = _slow_join(monkeypatch)
+    sink = b.create_sink([_dev("dev_a")])
+    b.set_app_routes({1: ["dev_a"], 2: ["dev_a"]})
+    engines = list(_FakeEngine.instances)
+
+    t0 = time.monotonic()
+    b.destroy_sink(sink)
+    assert time.monotonic() - t0 < 0.5
+    assert all(e.stopped and not e.joined for e in engines)  # all told, none joined yet
+
+    _SlowJoinEngine.release.set()
+    b.close(1)
+    assert all(e.joined for e in engines)
+
+
+def test_destroy_sink_does_not_wait_for_the_leader_engine_to_exit(monkeypatch):
+    b = _slow_join(monkeypatch, hub=False)
+    sink = b.create_sink([_dev("dev_a"), _dev("dev_b")])
+
+    t0 = time.monotonic()
+    b.destroy_sink(sink)
+    assert time.monotonic() - t0 < 0.5
+    assert sink.module.stopped and not sink.module.joined
+
+    _SlowJoinEngine.release.set()
+    b.close(1)
+    assert sink.module.joined
+
+
+def test_set_app_routes_does_not_wait_for_a_dropped_engine_to_exit(monkeypatch):
+    b = _slow_join(monkeypatch)
+    b.create_sink([_dev("dev_a")])
+    b.set_app_routes({1: ["dev_a"]})
+    engine1 = _FakeEngine.instances[0]
+    seen = []
+    orig_start = _SlowJoinEngine.start
+    monkeypatch.setattr(_SlowJoinEngine, "start", lambda self: (seen.append(engine1.stopped), orig_start(self)))
+
+    t0 = time.monotonic()
+    b.set_app_routes({2: ["dev_a"]})
+    assert time.monotonic() - t0 < 0.5
+    assert seen == [True]               # told to stop before the new one started
+    assert not engine1.joined
+
+    _SlowJoinEngine.release.set()
+    b.close(1)
+    assert engine1.joined
+
+
+def test_close_waits_for_reapers_up_to_its_timeout(monkeypatch):
+    b = _slow_join(monkeypatch)
+    b.create_sink([_dev("dev_a")])
+    b.set_app_routes({1: ["dev_a"]})
+    engine = _FakeEngine.instances[0]
+    b.destroy_sink(VirtualSink(None, "cable_in"))
+
+    t0 = time.monotonic()
+    b.close(timeout=0.1)                # wedged: gives up at the bound
+    assert time.monotonic() - t0 < 0.5
+    assert not engine.joined
+
+    _SlowJoinEngine.release.set()
+    b.close(timeout=1)
+    assert engine.joined

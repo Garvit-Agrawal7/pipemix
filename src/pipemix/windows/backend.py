@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 from pipemix.models import AudioDevice, VirtualSink
 from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
@@ -54,6 +55,8 @@ class WasapiBackend:
         self._apps_lock = threading.Lock()
         # Serializes whole set_app_routes calls (only poll threads contend for it).
         self._routes_lock = threading.Lock()
+        # Threads joining stopped engines; `close` waits for them on exit.
+        self._reapers: list[threading.Thread] = []
 
     @property
     def leader(self) -> str | None:
@@ -211,6 +214,10 @@ class WasapiBackend:
             self._prev_default = self.restore_target(devices)
             hub_id = self._leader
             engine = Engine(self._leader)
+            # ponytail: runs under the Controller lock (start_sharing, leader re-election), so it
+            # is held for one loopback open (tens of ms, ~0.5 s for Bluetooth, up to
+            # Engine.start's 10 s on a wedged driver). Moving it out needs
+            # a STARTING session that a stop or re-election can cancel, like apps_gen does for apps.
             engine.start()
 
         with self._apps_lock:
@@ -251,9 +258,10 @@ class WasapiBackend:
         one `Engine(pid=...)` per pid, stopped when it drops out, `set_legs` when its
         devices change. `gen` is the `apps_gen` the routes were computed under; stale
         routes (session stopped or restarted since) are ignored. Hub sessions only.
-        Never raises, never holds _apps_lock across Engine.start/stop, so destroy_sink
-        never waits on an in-flight start. Dropped engines stop before any new one
-        starts. A pid that fails to start is skipped until it leaves `routes` and returns."""
+        Never raises, never holds _apps_lock across Engine.start, so destroy_sink
+        never waits on an in-flight start, and never waits for an engine to finish
+        stopping. Dropped engines are told to stop before any new one starts. A pid
+        that fails to start is skipped until it leaves `routes` and returns."""
         with self._routes_lock:
             with self._apps_lock:
                 gen = self.apps_gen if gen is None else gen
@@ -266,7 +274,7 @@ class WasapiBackend:
                     self._send_legs(pid, engine, routes[pid])
                 new = [p for p in routes if p not in self._apps and p not in self._failed_apps]
 
-            self._stop_apps(dead)  # before any start: a slow start must not keep these playing
+            self._stop_engines(dead)  # before any start: a slow start must not keep these playing
             late: list[Engine] = []
             for pid in new:
                 engine = None
@@ -287,16 +295,40 @@ class WasapiBackend:
                     self._apps[pid] = engine
                     self._send_legs(pid, engine, routes[pid])
 
-        self._stop_apps(late)
+        self._stop_engines(late)
 
-    @staticmethod
-    def _stop_apps(engines: list[Engine]) -> None:
-        """Stop each app engine; never raises. Call with no _apps_lock held."""
+    def _stop_engines(self, engines: list[Engine]) -> None:
+        """Signal every engine to stop (each goes quiet within one pump tick, together),
+        then join them on a reaper thread, so no caller waits. Never raises. Call with
+        no _apps_lock held."""
+        if not engines:
+            return
         for engine in engines:
             try:
-                engine.stop()
+                engine.stop(wait=False)
             except Exception:
-                log.exception("Failed to stop app engine for pid %s", engine.pid)
+                log.exception("Failed to stop engine %s", engine.source_id or f"pid {engine.pid}")
+        reaper = threading.Thread(
+            target=self._reap, args=(engines,), name="pipemix-engine-reaper", daemon=True)
+        reaper.start()
+        with self._apps_lock:
+            self._reapers = [r for r in self._reapers if r.is_alive()] + [reaper]
+
+    @staticmethod
+    def _reap(engines: list[Engine]) -> None:
+        for engine in engines:
+            try:
+                engine.stop()  # joins; Engine.stop warns if the pump outlives the join
+            except Exception:
+                log.exception("Failed to stop engine %s", engine.source_id or f"pid {engine.pid}")
+
+    def close(self, timeout: float = 3.0) -> None:
+        """On exit: wait up to `timeout` in total for stopped engines to close their streams."""
+        deadline = time.monotonic() + timeout
+        with self._apps_lock:
+            reapers = list(self._reapers)
+        for reaper in reapers:
+            reaper.join(max(0.0, deadline - time.monotonic()))
 
     def _send_legs(self, pid: int, engine: Engine, ids: list[str]) -> None:
         """set_legs only when the ids differ from the last ones sent. Call under _apps_lock."""
@@ -314,11 +346,6 @@ class WasapiBackend:
         """Safe to call when the sink is already gone — never raises."""
         log.info("Destroying session on %s", sink.name)
         engine: Engine | None = sink.module
-        if engine is not None:
-            try:
-                engine.stop()
-            except Exception:
-                log.exception("Engine stop failed for %s", sink)
         sink.legs.clear()
 
         # Swap the apps out without waiting on an in-flight set_app_routes: it sees
@@ -329,7 +356,7 @@ class WasapiBackend:
             apps, self._apps = self._apps, {}
             self._failed_apps.clear()
             self._app_legs.clear()
-        self._stop_apps(list(apps.values()))
+        self._stop_engines(([engine] if engine is not None else []) + list(apps.values()))
 
         for pid in self._routed:
             try:
