@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import queue
 import threading
 import time
 
@@ -9,6 +10,7 @@ log = logging.getLogger(__name__)
 
 POLL_MS       = 5    # how often the pump looks at the source and the legs
 BUFFER_MS     = 200  # endpoint buffer we ask Windows for, source and legs alike
+TARGET_MS     = 30   # how much we keep queued in each endpoint
 DRIFT_MS      = 20   # how far a leg may fall behind before we drop frames
 DRIFT_KEEP_MS = 5    # what we leave queued after dropping
 LEG_RETRY_S   = 1.0  # how long a leg that failed to open waits before the next try
@@ -20,21 +22,54 @@ class _Leg:
     The queue is the drift signal. A leg whose clock runs slower than the
     source's accepts fewer frames per cycle than arrive, so its queue grows; a
     leg running faster drains its queue and `write` simply has nothing to give
-    it, which costs a gap of silence rather than a stall.
+    it, which costs one clean primed gap of silence rather than a stall.
+
+    An endpoint found completely dry while data waits is primed with enough
+    silence that it then holds two device periods plus POLL_MS, so pump jitter
+    and clock phase don't turn into underruns. Queued audio counts towards
+    that, so a stall backlog adds no silence.
     """
 
-    def __init__(self, device_id: str, client, render, frames: int, bpf: int, rate: int) -> None:
+    def __init__(self, device_id: str, client, render, frames: int, bpf: int, rate: int,
+                 period_ms: float = 10.0) -> None:
         self.id     = device_id
         self.client = client
         self.render = render
         self.frames = frames  # the endpoint's buffer size, in frames
         self.bpf    = bpf     # bytes per frame
+        self.target = int(rate * TARGET_MS / 1000)  # padding we aim for, in frames
+        self.prime  = int(rate * (period_ms + POLL_MS) / 1000)  # silence cushion for a dry endpoint
+        self.period = int(rate * period_ms / 1000)
+        self.target = max(self.target, self.prime + self.period)  # leave room for data after the cushion
         self.fifo   = bytearray()
         self.high   = int(rate * DRIFT_MS / 1000) * bpf
         self.keep   = int(rate * DRIFT_KEEP_MS / 1000) * bpf
 
     def push(self, data: bytes) -> None:
         self.fifo += data
+
+    def write(self) -> None:
+        padding = self.client.GetCurrentPadding()
+        if padding == 0 and self.fifo:
+            from pipemix.windows.wasapi.com import AUDCLNT_BUFFERFLAGS_SILENT
+
+            # Only the silence the queued audio can't cover: a stall's backlog
+            # is the cushion, and padding it with silence would make the
+            # drift trim delete real audio.
+            silence = max(0, self.prime + self.period - len(self.fifo) // self.bpf)
+            if silence:
+                self.render.GetBuffer(silence)
+                self.render.ReleaseBuffer(silence, AUDCLNT_BUFFERFLAGS_SILENT)
+                log.debug("[leg %s] dry: primed %d frames", self.id, silence)
+            padding = silence
+        n = min(min(self.frames, self.target) - padding, len(self.fifo) // self.bpf)
+        if n > 0:
+            nbytes = n * self.bpf
+            ctypes.memmove(self.render.GetBuffer(n), bytes(self.fifo[:nbytes]), nbytes)
+            self.render.ReleaseBuffer(n, 0)
+            del self.fifo[:nbytes]
+        # Drift is what's left once the endpoint is topped up, so a pump stall's
+        # backlog refills the endpoint first instead of being dropped.
         if len(self.fifo) > self.high:
             # ponytail: drops a block outright when a leg drifts behind. Costs
             # at most a 15 ms skip, and only on a leg whose clock is off. The
@@ -44,23 +79,56 @@ class _Leg:
             del self.fifo[:dropped]
             log.debug("[leg %s] drift: dropped %d frames", self.id, dropped // self.bpf)
 
-    def write(self) -> None:
-        free = self.frames - self.client.GetCurrentPadding()
-        n = min(free, len(self.fifo) // self.bpf)
-        if n <= 0:
-            return
-        nbytes = n * self.bpf
-        ctypes.memmove(self.render.GetBuffer(n), bytes(self.fifo[:nbytes]), nbytes)
-        self.render.ReleaseBuffer(n, 0)
-        del self.fifo[:nbytes]
+
+def _period_ms(client) -> float:
+    """The endpoint's default device period in ms; 10 if it can't be read."""
+    try:
+        period = client.GetDevicePeriod()
+        period = period[0] if isinstance(period, tuple) else period  # (default, minimum), 100 ns
+        if period > 0:
+            return period / 10_000
+        raise ValueError(period)
+    except Exception as e:
+        log.debug("GetDevicePeriod failed (%s), assuming 10 ms", e)
+        return 10.0
+
+
+def _mmcss_enter():
+    """Register the calling thread as "Pro Audio" with MMCSS. None if unavailable."""
+    try:
+        from ctypes import wintypes
+
+        avrt = ctypes.windll.avrt
+        avrt.AvSetMmThreadCharacteristicsW.restype = ctypes.c_void_p  # 64-bit handle
+        avrt.AvSetMmThreadCharacteristicsW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(wintypes.DWORD)]
+        handle = avrt.AvSetMmThreadCharacteristicsW("Pro Audio", ctypes.byref(wintypes.DWORD(0)))
+        if handle:
+            return handle
+        log.debug("MMCSS registration returned no handle")
+    except (AttributeError, OSError) as e:
+        log.debug("MMCSS unavailable: %s", e)
+    return None
+
+
+def _mmcss_leave(handle) -> None:
+    if not handle:
+        return
+    try:
+        revert = ctypes.windll.avrt.AvRevertMmThreadCharacteristics
+        revert.argtypes = [ctypes.c_void_p]  # 64-bit handle, not a C int
+        revert(handle)
+    except Exception as e:  # runs in _run's finally: must not skip CoUninitialize
+        log.debug("MMCSS revert failed: %s", e)
 
 
 class Engine:
     """Mirrors `source_id`, or app `pid`, onto whatever legs are set, on its own pump thread.
 
     `set_legs` is safe to call from any thread and any apartment: it only
-    records what is wanted. The pump thread opens and closes the endpoints
-    itself, so every COM pointer stays in the apartment that created it.
+    records what is wanted. An opener thread opens the legs, because a
+    Bluetooth open can take half a second and the pump must not stall for it;
+    the pump adopts and closes them. Both run in the process MTA, so every COM
+    pointer is valid on either.
     """
 
     def __init__(self, source_id: str | None = None, *, pid: int | None = None) -> None:
@@ -73,6 +141,10 @@ class Engine:
         self._wanted: set[str] = set()
         self._legs: dict[str, _Leg] = {}
         self._retry_at: dict[str, float] = {}  # monotonic time a failed leg may be tried again
+        self._opening: set[str] = set()        # legs handed to the opener, not back yet
+        self._requests: queue.Queue = queue.Queue()  # device ids to open; None stops the opener
+        self._results: queue.Queue = queue.Queue()   # (device_id, _Leg or Exception)
+        self._opener: threading.Thread | None = None
         self._lock   = threading.Lock()
         self._stop   = threading.Event()
         self._ready  = threading.Event()
@@ -100,7 +172,7 @@ class Engine:
     def stop(self) -> None:
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=3)
+            self._thread.join(timeout=5)  # covers the opener's join in _close
         self._thread = None
 
     def set_legs(self, device_ids) -> None:
@@ -118,6 +190,7 @@ class Engine:
         import comtypes
 
         comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+        mmcss = _mmcss_enter()
         try:
             try:
                 self._open_source()
@@ -131,6 +204,13 @@ class Engine:
             finally:
                 self._ready.set()
 
+            # Only now: the opener reads _fmt/_bpf/_rate, and reuses the
+            # enumerator _open_source made (process loopback never makes one,
+            # so the opener is then its only user).
+            self._opener = threading.Thread(
+                target=self._open_legs, name=f"{threading.current_thread().name}-opener", daemon=True)
+            self._opener.start()
+
             poll = POLL_MS / 1000
             while not self._stop.is_set():
                 try:
@@ -141,6 +221,26 @@ class Engine:
                 time.sleep(poll)
         finally:
             self._close()
+            _mmcss_leave(mmcss)
+            comtypes.CoUninitialize()
+
+    def _open_legs(self) -> None:
+        """Opener thread: open whatever the pump asks for, hand back the leg or the error."""
+        import comtypes
+
+        comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+        try:
+            while True:
+                device_id = self._requests.get()
+                if device_id is None or self._stop.is_set():
+                    return
+                try:
+                    result = self._open_leg(device_id)
+                except Exception as e:
+                    result = e
+                self._results.put((device_id, result))
+                result = None  # don't keep a COM object or traceback alive until the next open
+        finally:
             comtypes.CoUninitialize()
 
     def _device(self, device_id: str):
@@ -278,31 +378,44 @@ class Engine:
         )
         render = client.GetService(IAudioRenderClient._iid_).QueryInterface(IAudioRenderClient)
         client.Start()
+        period_ms = _period_ms(client)
         log.info("Engine leg open: %s", device_id)
-        return _Leg(device_id, client, render, client.GetBufferSize(), self._bpf, self._rate)
+        return _Leg(device_id, client, render, client.GetBufferSize(), self._bpf, self._rate,
+                    period_ms=period_ms)
 
     def _reconcile(self) -> None:
         with self._lock:
             wanted = set(self._wanted)
 
         now = time.monotonic()
-        for device_id in list(self._retry_at):
-            if device_id not in wanted:
-                del self._retry_at[device_id]
-
-        for device_id in wanted - set(self._legs):
-            if now < self._retry_at.get(device_id, now):
-                continue
+        while True:
             try:
-                self._legs[device_id] = self._open_leg(device_id)
-                self._retry_at.pop(device_id, None)
-            except Exception as e:
+                device_id, result = self._results.get_nowait()
+            except queue.Empty:
+                break
+            self._opening.discard(device_id)
+            if isinstance(result, Exception):
                 # One dead endpoint must not take the others down, and must not
                 # be retried every 5 ms. It stays wanted, though: an endpoint
                 # held in exclusive mode, or mid profile switch, comes back.
                 (log.debug if device_id in self._retry_at else log.error)(
-                    "Engine could not open leg %s: %s", device_id, e)
+                    "Engine could not open leg %s: %s", device_id, result)
                 self._retry_at[device_id] = now + LEG_RETRY_S
+            elif device_id in wanted and device_id not in self._legs:
+                self._legs[device_id] = result
+                self._retry_at.pop(device_id, None)
+            else:
+                self._close_leg(result)  # unwanted while it was opening
+
+        for device_id in list(self._retry_at):
+            if device_id not in wanted:
+                del self._retry_at[device_id]
+
+        for device_id in wanted - set(self._legs) - self._opening:
+            if now < self._retry_at.get(device_id, now):
+                continue
+            self._opening.add(device_id)
+            self._requests.put(device_id)
 
         for device_id in set(self._legs) - wanted:
             self._close_leg(self._legs.pop(device_id))
@@ -341,6 +454,22 @@ class Engine:
                 self._close_leg(self._legs.pop(device_id))
 
     def _close(self) -> None:
+        if self._opener is not None:
+            self._requests.put(None)
+            # ponytail: a wedged driver call can't be cancelled; past this we
+            # abandon the opener (daemon) and leak whatever it opens.
+            self._opener.join(timeout=2)
+            if self._opener.is_alive():
+                log.warning("Engine opener still busy after 2 s, abandoning it")
+            self._opener = None
+        while True:
+            try:
+                _device_id, result = self._results.get_nowait()
+            except queue.Empty:
+                break
+            if not isinstance(result, Exception):
+                self._close_leg(result)
+        self._opening.clear()
         for leg in list(self._legs.values()):
             self._close_leg(leg)
         self._legs.clear()
