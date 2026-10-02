@@ -134,6 +134,53 @@ def test_leader_disconnect_with_no_survivors_errors(tmp_path: Path) -> None:
     assert ctrl.session.sink is None
 
 
+def test_failed_reelection_ends_the_session_so_the_next_start_is_fresh(tmp_path: Path) -> None:
+    b = _leader_backend()
+    ctrl = _ctrl(tmp_path, backend=b)
+    d1, d2 = _dev("EP1"), _dev("EP2")
+    ctrl.devices = {d.id: d for d in (d1, d2)}
+    ctrl.start_sharing([d1, d2])
+
+    create = b.create_sink.side_effect
+    b.create_sink.side_effect = BackendError("survivor wedged")
+    with pytest.raises(BackendError):
+        ctrl._on_disconnect("EP1")
+    assert ctrl.session.state == SessionState.ERROR
+    assert ctrl.session.sink is None                     # not the destroyed sink
+
+    b.create_sink.side_effect = create
+    b.reprobe.reset_mock()
+    ctrl.start_sharing([d2])
+    b.reprobe.assert_called_once()                       # fresh start, not a retarget
+    assert ctrl.session.state == SessionState.ACTIVE and b.leader == "EP2"
+
+
+def test_route_destroys_the_new_sink_when_set_default_fails(tmp_path: Path) -> None:
+    b = _leader_backend()
+    b.set_default.side_effect = BackendError("endpoint going away")
+    ctrl = _ctrl(tmp_path, backend=b)
+    d1 = _dev("EP1")
+    ctrl.devices = {d1.id: d1}
+
+    with pytest.raises(BackendError):
+        ctrl.start_sharing([d1])
+    b.destroy_sink.assert_called_once()                  # the leader engine is stopped
+    assert ctrl.session.sink is None
+
+
+def test_start_sharing_pushes_the_reprobed_mode(tmp_path: Path) -> None:
+    b = _backend("leader")
+    ctrl = _ctrl(tmp_path, backend=b)
+    pushed = []
+    ctrl.connect("health-changed", lambda _c, status: pushed.append(status.engine))
+    b.health.return_value = BackendStatus(BackendHealth.OK, "ok", engine="hub")  # cable came back
+    d1 = _dev("EP1")
+    ctrl.devices = {d1.id: d1}
+
+    ctrl.start_sharing([d1])
+    assert pushed == ["hub"]
+
+
 # -- A non-leader disconnect only rebuilds the legs --
 
 def test_non_leader_disconnect_only_rebuilds_legs(tmp_path: Path) -> None:
@@ -976,6 +1023,55 @@ def test_stop_sharing_does_not_wait_for_app_engines_to_exit(tmp_path: Path, monk
     release.set()
     ctrl.stop()                                          # quit path: bounded join of the reaper
     assert all(e.joined for e in engines)
+
+
+def test_reelection_keeps_leader_mode_when_cable_appears(tmp_path: Path, monkeypatch) -> None:
+    """A session keeps the mode it started in: VB-CABLE appearing mid-session must not
+    turn a leader re-election into a silent hub session; the next fresh start picks it up."""
+    from pipemix.windows import backend as backend_mod
+
+    engines = []
+
+    class _Eng:
+        def __init__(self, source_id=None, *, pid=None):
+            self.source_id, self.pid = source_id, pid
+            engines.append(self)
+
+        def start(self):
+            pass
+
+        def set_legs(self, ids):
+            pass
+
+        def stop(self, wait=True):
+            pass
+
+    b = _real_backend(monkeypatch, _Eng)
+    monkeypatch.setattr(backend_mod, "default_output_id", lambda: None)
+    cable = [None, None]
+    b._find_cable = lambda: tuple(cable)
+    del b._probe                                         # the real probe, driven by _find_cable
+    ctrl = _ctrl(tmp_path, backend=b)
+    d1, d2, d3 = _dev("EP1"), _dev("EP2"), _dev("EP3")
+    ctrl.devices = {d.id: d for d in (d1, d2, d3)}
+
+    ctrl.start_sharing([d1, d2, d3])
+    assert b.health().engine == "leader" and b.leader == "EP1"
+
+    cable[:] = ["cable_in", "cable_out"]                 # user re-enables the CABLE endpoints
+    ctrl._on_disconnect("EP1")
+
+    assert ctrl.session.state == SessionState.ACTIVE
+    assert b.health().engine == "leader"
+    assert b.leader in ("EP2", "EP3")
+    assert [e.source_id for e in engines] == ["EP1", b.leader]
+    assert ctrl._app_poll is None                        # leader mode needs no app poll
+
+    ctrl.stop_sharing()
+    ctrl.start_sharing([d2, d3])
+    assert b.health().engine == "hub"
+    assert ctrl.active_sink() == "cable_in"
+    assert ctrl._app_poll is not None
 
 
 # -- Quitting while the poll is inside a slow Engine.start --

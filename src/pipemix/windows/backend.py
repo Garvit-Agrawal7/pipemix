@@ -62,11 +62,16 @@ class WasapiBackend:
         return self._leader
 
     def health(self) -> BackendStatus:
-        """Never raises. Cached until the next create_sink — a cable
+        """Never raises. Cached until the next `reprobe` — a cable
         appearing mid-session does not migrate a running session."""
         if self._status is None:
             self._status = self._probe()
         return self._status
+
+    def reprobe(self) -> None:
+        """Pick hub vs leader mode afresh; the Controller calls it only before
+        a new session, so a session keeps its mode through leader re-election."""
+        self._status = self._probe()
 
     def _probe(self) -> BackendStatus:
         cable_in, cable_out = self._find_cable()
@@ -195,9 +200,7 @@ class WasapiBackend:
         if not devices:
             raise BackendError("No devices selected.")
 
-        self._status = self._probe()
-
-        if self._status.engine == "hub":
+        if self.health().engine == "hub":
             cable_in, cable_out = self._find_cable()
             if not (cable_in and cable_out):
                 raise BackendError(
