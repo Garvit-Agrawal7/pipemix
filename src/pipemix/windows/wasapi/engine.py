@@ -152,7 +152,7 @@ class Engine:
 
     def _open_source(self) -> None:
         if self.pid is not None:
-            return self._open_process_source()
+            return self._open_process()
         import comtypes
         from pycaw.api.audioclient import IAudioClient
         from pycaw.api.mmdeviceapi import IMMEndpoint
@@ -196,7 +196,7 @@ class Engine:
         ).QueryInterface(IAudioCaptureClient)
         self._client.Start()
 
-    def _open_process_source(self) -> None:
+    def _open_process(self) -> None:
         """Process loopback of `self.pid`, polled like any other source."""
         from comtypes import COMObject
         from pycaw.api.audioclient import IAudioClient
@@ -209,8 +209,8 @@ class Engine:
             IActivateAudioInterfaceCompletionHandler,
             IAgileObject,
             PROPVARIANT_BLOB,
-            process_loopback_format,
-            process_loopback_params,
+            loopback_format,
+            loopback_params,
         )
 
         class Handler(COMObject):
@@ -233,7 +233,7 @@ class Engine:
             ctypes.POINTER(IActivateAudioInterfaceCompletionHandler),
             ctypes.POINTER(ctypes.POINTER(IActivateAudioInterfaceAsyncOperation)),
         ]
-        params, blob = process_loopback_params(self.pid)  # params must outlive the call
+        params, blob = loopback_params(self.pid)  # params must outlive the call
         handler = Handler()
         op = ctypes.POINTER(IActivateAudioInterfaceAsyncOperation)()
         activate(
@@ -249,7 +249,7 @@ class Engine:
         self._client = unk.QueryInterface(IAudioClient)
         # GetMixFormat is not supported on a process-loopback client, so we
         # pick the format; a pointer, like GetMixFormat's, so legs use it as is.
-        self._fmt = ctypes.pointer(process_loopback_format())
+        self._fmt = ctypes.pointer(loopback_format())
         self._start_capture(AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM)
         log.info(
             "Engine source open: pid %d (process loopback, %d Hz, %d ch)",
