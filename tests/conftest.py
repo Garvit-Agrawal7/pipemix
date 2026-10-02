@@ -22,8 +22,6 @@ except ImportError:
         SignalFlags = type("SignalFlags", (), {"RUN_FIRST": 0})()
 
     class _FakeGLib:
-        SOURCE_REMOVE = False
-
         @staticmethod
         def timeout_add(*a, **kw):
             pass

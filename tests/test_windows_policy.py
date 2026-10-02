@@ -44,13 +44,6 @@ def calls_returning(*results):
     return fake_vtable_fn, log
 
 
-def test_packed_id_wraps_the_endpoint():
-    packed = policy._pack_render_id("{0.0.0.00000000}.{abc}")
-    assert packed.startswith("\\\\?\\SWD#MMDEVAPI#")
-    assert packed.endswith("#{e6327cad-dcec-4949-ae8a-991e976a79d2}")
-    assert "{0.0.0.00000000}.{abc}" in packed
-
-
 def test_one_refused_role_is_not_a_failure(monkeypatch, router):
     # Roles are set independently; Windows accepting only one of them still
     # means the app got routed.

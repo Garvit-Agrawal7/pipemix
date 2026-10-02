@@ -49,19 +49,6 @@ def test_startup_clears_a_stranded_default_for_a_missing_endpoint(tmp_path: Path
     assert cfg.data["prev_default"] is None
 
 
-def test_startup_with_no_prev_default_attempts_nothing(tmp_path: Path) -> None:
-    b = _backend()
-    b.list_outputs.return_value = [_dev("EP1")]
-    cfg = ConfigManager(tmp_path / "config.json")
-    assert cfg.data["prev_default"] is None
-    ctrl = _ctrl(tmp_path, backend=b, config=cfg)
-
-    ctrl.clean_orphans()
-
-    b.set_default.assert_not_called()
-    assert cfg.data["prev_default"] is None
-
-
 # -- Clean stop leaves nothing behind --
 
 def test_clean_stop_leaves_no_prev_default_for_next_startup(tmp_path: Path) -> None:

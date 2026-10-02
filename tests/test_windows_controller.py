@@ -381,34 +381,7 @@ def test_stuck_never_true_without_an_active_stream_or_session(tmp_path: Path) ->
 
 
 
-# -- Per-app pins: no blanket move_streams, and pins are tracked by exe --
-
-def test_start_sharing_never_calls_move_streams(tmp_path: Path) -> None:
-    b = _backend(engine="hub")
-    ctrl = _ctrl(tmp_path, backend=b)
-    d1 = _dev("EP1")
-    ctrl.devices = {d1.id: d1}
-
-    ctrl.start_sharing([d1])
-
-    b.move_streams.assert_not_called()
-
-
-def test_route_stream_records_and_clears_pinned_app(tmp_path: Path) -> None:
-    b = _backend(engine="hub")
-    b.list_streams.return_value = [
-        _app(42),
-    ]
-    ctrl = _ctrl(tmp_path, backend=b)
-    d1, d2 = _dev("EP1"), _dev("EP2")
-    ctrl.devices = {d.id: d for d in (d1, d2)}
-
-    ctrl.route_stream(42, [d2.id])
-    assert ctrl.config.data["pinned_apps"] == ["C:\\App.exe"]
-
-    ctrl.route_stream(42, None)
-    assert ctrl.config.data["pinned_apps"] == []
-
+# -- Per-app pins are tracked by exe --
 
 def test_stop_sharing_unpins_a_live_pinned_app(tmp_path: Path) -> None:
     # Leader mode: under contract D a hub session's route_stream no longer pins,

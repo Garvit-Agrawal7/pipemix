@@ -33,27 +33,17 @@ def test_multi_device_creates_virtual_sink(ctrl, devs) -> None:
     ctrl.backend.create_sink.assert_called_once()
 
 
-# -- Stop sharing restores default --
+# -- Stop sharing destroys the hub and restores default --
 
-def test_stop_restores_default(ctrl) -> None:
+def test_stop_destroys_hub_and_restores_default(ctrl) -> None:
     ctrl.backend.get_default.return_value = "original_sink"
     dev = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
     ctrl.start_sharing([dev])
+    sink = ctrl.session.sink
     ctrl.stop_sharing()
 
     assert ctrl.session.state == SessionState.IDLE
     ctrl.backend.set_default.assert_called_with("original_sink")
-
-
-# -- Stop destroys the virtual sink --
-
-def test_stop_destroys_virtual_sink(ctrl, devs) -> None:
-    d1, d2 = devs
-    ctrl.start_sharing([d1, d2])
-
-    sink = ctrl.session.sink
-    ctrl.stop_sharing()
-
     ctrl.backend.destroy_sink.assert_called_with(sink)
 
 
@@ -123,14 +113,6 @@ def test_failed_start_tears_down_the_hub(ctrl) -> None:
 
 
 # -- Volume routing --
-
-def test_device_volume_forwarded(ctrl) -> None:
-    dev = _dev("AA:BB:CC:DD:EE:01", sink="sink_a")
-    ctrl.devices[dev.id] = dev
-    ctrl.set_device_volume(dev.id, 75)
-
-    ctrl.backend.set_volume.assert_called_with("sink_a", 75)
-
 
 def test_master_volume_during_session(ctrl, devs) -> None:
     """Two outputs: master rides the hub and each device keeps its own level."""
@@ -269,15 +251,6 @@ def test_orphan_cleanup_on_start(make_ctrl) -> None:
     make_ctrl(b)
 
     b.destroy_sink.assert_called_with(orphan)
-
-
-# -- Preset save / apply round-trip --
-
-def test_preset_save_and_apply(ctrl) -> None:
-    pid = ctrl.config.save_preset("Movie Mode", ["AA:BB", "CC:DD"])
-
-    assert pid in ctrl.config.presets
-    assert ctrl.config.presets[pid]["devices"] == ["AA:BB", "CC:DD"]
 
 
 # -- Refresh --

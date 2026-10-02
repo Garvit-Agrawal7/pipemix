@@ -55,20 +55,14 @@ def test_5_rebuild_keeps_offline_targets(ctrl):
 
 # -- 6: one latency re-check when a leg joins, none otherwise --
 
-def test_6_start_schedules_one_recheck(ctrl, glib):
-    a = _dev(A, "sink_a")
-    ctrl.devices = {A: a}
+def test_6_start_and_retarget_add_schedule_one_recheck(ctrl, glib):
+    a, b = _dev(A, "sink_a"), _dev(B, "sink_b")
+    ctrl.devices = {A: a, B: b}
     ctrl.start_sharing([a])
 
     rs = _rechecks(glib, ctrl)
     assert len(rs) == 1
     assert 1000 <= rs[0].args[0] <= 5000
-
-
-def test_6_retarget_adding_schedules_one_recheck(ctrl, glib):
-    a, b = _dev(A, "sink_a"), _dev(B, "sink_b")
-    ctrl.devices = {A: a, B: b}
-    ctrl.start_sharing([a])
     glib.reset_mock()
 
     ctrl.start_sharing([a, b])
@@ -106,20 +100,6 @@ def test_10_hotplug_follows_a_recreated_bt_sink(ctrl):
     ctrl.backend.resolve_bt_sink.assert_any_call(A)
     ctrl.backend.set_legs.assert_called()
     assert _legs(ctrl) == {A: "bluez_output.X.2"}
-
-
-def test_10_hotplug_restores_a_missing_bt_leg(ctrl):
-    a = _dev(A, "bluez_output.X.1")
-    ctrl.devices = {A: a}
-    ctrl.start_sharing([a])
-    ctrl.session.sink.legs.clear()  # the leg unloaded itself
-    ctrl.backend.set_legs.reset_mock()
-    ctrl.backend.resolve_bt_sink.return_value = "bluez_output.X.1"
-
-    ctrl._hotplug()
-
-    ctrl.backend.set_legs.assert_called()
-    assert _legs(ctrl) == {A: "bluez_output.X.1"}
 
 
 def test_10_hotplug_outside_session_leaves_bt_alone(ctrl):

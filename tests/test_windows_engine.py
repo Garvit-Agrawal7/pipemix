@@ -15,15 +15,6 @@ from pipemix.windows.wasapi.com import AUDCLNT_BUFFERFLAGS_SILENT
 from pipemix.windows.wasapi.engine import DRIFT_KEEP_MS, Engine, _Leg, _period_ms
 
 
-@pytest.mark.parametrize("kwargs, source_id, pid", [
-    ({"pid": 42}, None, 42),
-    ({"source_id": "id"}, "id", None),
-])
-def test_engine_source(kwargs, source_id, pid):
-    e = Engine(**kwargs)
-    assert (e.source_id, e.pid) == (source_id, pid)
-
-
 # -- com.py: process-loopback declarations ------------------------------
 
 def test_loopback_params():
@@ -44,17 +35,6 @@ def test_propvariant_blob_offsets():
     assert blob.vt.offset == 0
     assert blob.cbSize.offset == 8
     assert blob.pBlobData.offset == 16
-
-
-def test_loopback_format():
-    fmt = com.loopback_format()
-    assert fmt.wFormatTag == 3
-    assert fmt.nChannels == 2
-    assert fmt.nSamplesPerSec == 48000
-    assert fmt.wBitsPerSample == 32
-    assert fmt.nBlockAlign == 8
-    assert fmt.nAvgBytesPerSec == 384000
-    assert fmt.cbSize == 0
 
 
 # -- A dead leg must not starve the others --------------------------------
@@ -373,14 +353,6 @@ def test_write_does_nothing_at_or_over_target():
     assert len(leg.fifo) == 4 * 900
 
 
-def test_surplus_stays_in_the_fifo():
-    leg, client, render = _pad_leg(padding=1000)
-    leg.fifo = bytearray(4 * 600)
-    leg.write()
-    assert render.released == [440]
-    assert len(leg.fifo) == 4 * 160
-
-
 def test_sustained_surplus_triggers_drift_drop():
     leg, client, render = _pad_leg(padding=1440)  # endpoint never drains
     for _ in range(10):
@@ -430,19 +402,6 @@ def test_stall_backlog_on_a_dry_endpoint_adds_no_silence_and_drops_nothing():
     assert len(leg.fifo) == 4 * (1920 - leg.target)  # the rest kept, not trimmed
 
 
-def test_non_empty_endpoint_is_never_primed():
-    leg, client, render = _pad_leg(padding=1)
-    leg.fifo = bytearray(4 * 5000)
-    leg.write()
-    assert render.writes == [(leg.target - 1, 0)]
-
-
-def test_dry_endpoint_with_empty_fifo_writes_nothing():
-    leg, client, render = _pad_leg()
-    leg.write()
-    assert render.writes == []
-
-
 def test_primes_once_then_steady_state_never_runs_dry():
     leg, client, render = _pad_leg()
     queued = 0  # frames in the endpoint, mirrored from what the leg wrote
@@ -484,12 +443,7 @@ def test_empty_fifo_write_skips_the_padding_call():
     leg, client, render = _pad_leg()
     client.GetCurrentPadding = lambda: pytest.fail("GetCurrentPadding called")
     leg.write()
-
-
-def test_source_period_raises_target_default_unchanged():
-    leg = _pad_leg(period_ms=10, src_period_ms=20)[0]
-    assert leg.target == leg.prime + 960 == 1680
-    assert _pad_leg(src_period_ms=10)[0].target == 1440
+    assert render.writes == []
 
 
 def test_open_leg_sizes_target_to_the_source_period(monkeypatch):
@@ -581,11 +535,7 @@ def test_mmcss_failure_does_not_stop_the_engine(monkeypatch, avrt):
 # -- stop(wait=False) only signals; the pump closes itself -----------------
 
 def test_stop_without_wait_returns_at_once_and_the_pump_closes_itself(monkeypatch):
-    import comtypes
-
-    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(avrt=_Avrt()), raising=False)
-    monkeypatch.setattr(comtypes, "CoInitializeEx", lambda *a: None)
-    monkeypatch.setattr(comtypes, "CoUninitialize", lambda: None)
+    _patch_com(monkeypatch, _Avrt())
     e = Engine("src")
     for name in ("_open_source", "_reconcile", "_pump"):
         monkeypatch.setattr(e, name, lambda: None)

@@ -17,15 +17,10 @@ def _loops(f: Fake) -> list[list[str]]:
     return [c for c in f.loads if c[0] == "module-loopback"]
 
 
-def test_1_dont_move(fake) -> None:
+def test_loopback_args(fake) -> None:
     PactlBackend().set_legs(VirtualSink(1, HUB), [_dev("wired")])
     (call,) = _loops(fake)
     assert "sink_dont_move=true" in call and "source_dont_move=true" in call, call
-
-
-def test_2_node_latency_pinned(fake) -> None:
-    PactlBackend().set_legs(VirtualSink(1, HUB), [_dev("wired")])
-    (call,) = _loops(fake)
     si, so = _prop(call, "sink_input_properties"), _prop(call, "source_output_properties")
     assert f"media.name={HUB}" in si and "node.latency=1024/48000" in si, call
     assert "node.latency=1024/48000" in so, call

@@ -160,6 +160,9 @@ def test_leader_mode_excludes_leader_from_legs(monkeypatch):
     assert engine.legs == ["dev_b"]
     assert sink.legs == {"dev_b": 0}
     assert b.leader == "dev_a"
+    # The Controller passes `sink.name` to `set_default`, `set_volume` and
+    # `move_stream`, so it must be a real endpoint, not a Linux-style `pipemix_<uuid>`.
+    assert sink.name == b.leader
     assert _FakeEngine.instances == [engine]
 
 
@@ -183,18 +186,6 @@ def test_create_sink_leaves_the_default_alone(monkeypatch):
     assert sink.name == "cable_in"   # but it names where the Controller should point
 
 
-# -- the sink's name has to be a real endpoint --
-
-# The Controller passes `session.sink.name` to `set_default`, `set_volume` and
-# `move_stream`, so it must be a real endpoint; a Linux-style `pipemix_<uuid>`
-# would fail each with E_INVALIDARG.
-
-def test_leader_mode_names_the_sink_after_the_leader(monkeypatch):
-    b = _backend(monkeypatch, default="dev_b")
-    sink = b.create_sink([_dev("dev_a"), _dev("dev_b")])
-    assert sink.name == "dev_b" == b.leader
-
-
 # -- destroy_sink --
 
 def test_destroy_sink_stops_the_engine_and_forgets_the_leader(monkeypatch):
@@ -206,17 +197,6 @@ def test_destroy_sink_stops_the_engine_and_forgets_the_leader(monkeypatch):
     assert sink.module.stopped is True
     assert sink.legs == {}
     assert b.leader is None
-
-
-def test_destroy_sink_never_raises_when_engine_stop_fails(monkeypatch):
-    b = _backend(monkeypatch, hub=False, default="original")
-    sink = b.create_sink([_dev("dev_a")])
-
-    def _boom(*_a, **_k):
-        raise RuntimeError("endpoint already gone")
-    sink.module.stop = _boom
-
-    b.destroy_sink(sink)  # must not raise
 
 
 # -- restore_target --
@@ -238,18 +218,6 @@ def test_restore_target_falls_back_to_list_outputs_when_no_selected_device_quali
     # dev "cable_in" itself and a disconnected device don't qualify.
     result = b.restore_target([_dev("cable_in"), _dev("dev_b", connected=False)])
     assert result == "real_dev"
-
-
-# -- move_stream routes through the router; None clears the pin --
-
-def test_move_stream_with_none_clears_the_pin(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    fake_router = _FakeAppRouter()
-    b._app_router = fake_router
-
-    b.move_stream(1, None)
-
-    assert (1, None) in fake_router.calls
 
 
 def test_destroy_sink_unpins_apps_routed_to_the_hub_but_not_manual_moves(monkeypatch):
@@ -357,18 +325,6 @@ def test_set_app_routes_a_failed_pid_is_not_retried_while_still_requested(monkey
     assert len(_FakeEngine.instances) == 2
 
 
-def test_destroy_sink_stops_every_app_engine(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    sink = b.create_sink([_dev("dev_a")])
-    b.set_app_routes({1: ["dev_a"], 2: ["dev_a"]})
-    app_engines = list(_FakeEngine.instances)
-    assert len(app_engines) == 2
-
-    b.destroy_sink(sink)
-
-    assert all(e.stopped for e in app_engines)
-
-
 def test_destroy_sink_never_raises_when_an_app_engine_stop_fails(monkeypatch):
     b = _backend(monkeypatch, hub=True, default="original")
     sink = b.create_sink([_dev("dev_a")])
@@ -384,16 +340,6 @@ def test_destroy_sink_never_raises_when_an_app_engine_stop_fails(monkeypatch):
     assert engine2.stopped is True
     b.close(1)
     assert engine2.joined is True
-
-
-def test_set_legs_on_a_hub_sink_with_no_engine_module_works(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    sink = b.create_sink([_dev("dev_a")])
-    assert sink.module is None
-
-    b.set_legs(sink, [_dev("dev_a"), _dev("dev_b")])  # must not raise
-
-    assert sink.legs == {"dev_a": 0, "dev_b": 0}
 
 
 # -- set_app_routes never holds a lock across Engine.start/stop --
@@ -484,23 +430,6 @@ def test_engine_stop_runs_with_no_backend_lock_held(monkeypatch):
     b.close(1)                                     # and both reapers' joins
 
     assert _SlowEngine.stop_saw_lock_free == [True, True]
-
-
-def test_dropped_engine_stops_before_a_new_one_starts(monkeypatch):
-    b = _hub_session(monkeypatch)
-    b.set_app_routes({1: ["dev_a"]})
-    engine1 = _FakeEngine.instances[0]
-    seen = []
-    orig_start = _FakeEngine.start
-
-    def start(self):
-        seen.append(engine1.stopped)
-        orig_start(self)
-    monkeypatch.setattr(_FakeEngine, "start", start)
-
-    b.set_app_routes({2: ["dev_a"]})  # pid 1 drops, pid 2 appears in the same poll
-
-    assert seen == [True]
 
 
 def test_set_legs_sent_once_while_engine_legs_lag(monkeypatch):

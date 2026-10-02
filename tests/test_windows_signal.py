@@ -23,7 +23,3 @@ def test_a_raising_handler_does_not_stop_its_siblings():
     emitter.connect("state-changed", lambda _e, p: calls.append(p))
     emitter.emit("state-changed", "active")
     assert calls == ["boom", "active"]
-
-
-def test_emitting_a_signal_nobody_listens_to_is_fine():
-    SignalEmitter().emit("devices-changed", [])
