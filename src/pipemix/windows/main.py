@@ -159,12 +159,11 @@ def main() -> None:
 
     def quit(_sig, _frame):
         print("\nStopping sharing...")
-        ctrl.stop_sharing()
         stop_event.set()
 
     signal.signal(signal.SIGINT, quit)
     stop_event.wait()
-    ctrl.backend.close()  # bounded: stopped engines close their streams before exit
+    ctrl.stop()  # bounded: stops sharing, joins the app poll, lets engines close
 
 
 if __name__ == "__main__":

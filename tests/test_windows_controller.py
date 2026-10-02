@@ -917,9 +917,28 @@ def test_poll_stopped_during_set_app_routes_pushes_nothing(tmp_path: Path, monke
     assert pushed == []
 
 
-def test_stop_sharing_does_not_wait_for_app_engines_to_exit(tmp_path: Path, monkeypatch) -> None:
+def _real_backend(monkeypatch, engine_cls):
+    """A real WasapiBackend in hub mode on `engine_cls`, with every Windows call faked."""
     from pipemix.windows import backend as backend_mod
 
+    monkeypatch.setattr(backend_mod, "Engine", engine_cls)
+    b = backend_mod.WasapiBackend()
+    hub = BackendStatus(BackendHealth.OK, "ok", engine="hub")
+    # Nothing here may reach the real Windows default or endpoints.
+    b._probe = lambda: hub
+    b._find_cable = lambda: ("cable_in", "cable_out")
+    b.restore_target = lambda devices=(): "prev"
+    b.get_default = lambda: "prev"
+    b.list_outputs = lambda: []
+    b.list_streams = lambda: []
+    b.set_default = lambda sink: None
+    b.set_volume = lambda sink, volume: None
+    b.set_mute = lambda sink, mute: None
+    b.get_volume = lambda sink: 50
+    return b
+
+
+def test_stop_sharing_does_not_wait_for_app_engines_to_exit(tmp_path: Path, monkeypatch) -> None:
     release = threading.Event()
     engines = []
 
@@ -941,20 +960,7 @@ def test_stop_sharing_does_not_wait_for_app_engines_to_exit(tmp_path: Path, monk
                 release.wait(1)
                 self.joined = True
 
-    monkeypatch.setattr(backend_mod, "Engine", _SlowJoin)
-    b = backend_mod.WasapiBackend()
-    hub = BackendStatus(BackendHealth.OK, "ok", engine="hub")
-    # Nothing here may reach the real Windows default or endpoints.
-    b._probe = lambda: hub
-    b._find_cable = lambda: ("cable_in", "cable_out")
-    b.restore_target = lambda devices=(): "prev"
-    b.get_default = lambda: "prev"
-    b.list_outputs = lambda: []
-    b.list_streams = lambda: []
-    b.set_default = lambda sink: None
-    b.set_volume = lambda sink, volume: None
-    b.set_mute = lambda sink, mute: None
-    b.get_volume = lambda sink: 50
+    b = _real_backend(monkeypatch, _SlowJoin)
     ctrl = _ctrl(tmp_path, backend=b)
     d1 = _dev("EP1")
     ctrl.devices = {d1.id: d1}
@@ -970,6 +976,97 @@ def test_stop_sharing_does_not_wait_for_app_engines_to_exit(tmp_path: Path, monk
     release.set()
     ctrl.stop()                                          # quit path: bounded join of the reaper
     assert all(e.joined for e in engines)
+
+
+# -- Quitting while the poll is inside a slow Engine.start --
+
+def _quit_during_start(tmp_path: Path, monkeypatch, start_s: float):
+    """A hub session whose real poll is inside Engine(pid=42).start(), which returns
+    after `start_s`. Returns (ctrl, engines, release)."""
+    monkeypatch.setattr(controller_module, "APP_POLL_S", 999)
+    monkeypatch.setattr(Controller, "_poll_apps", _REAL_POLL)
+    entered, release = threading.Event(), threading.Event()
+    engines = []
+
+    class _SlowStart:
+        def __init__(self, source_id=None, *, pid=None):
+            self.source_id, self.pid = source_id, pid
+            self.signalled = self.joined = False
+            engines.append(self)
+
+        def start(self):
+            entered.set()
+            release.wait(start_s)
+
+        def set_legs(self, ids):
+            pass
+
+        def stop(self, wait=True):
+            self.signalled = True
+            self.joined = self.joined or wait
+
+    b = _real_backend(monkeypatch, _SlowStart)
+    b.list_streams = lambda: [{"id": 42, "name": "App", "sink": "cable_in", "endpoint": "cable_in",
+                               "active": True, "mute": False, "exe": "a.exe"}]
+    ctrl = _ctrl(tmp_path, backend=b)
+    d1 = _dev("EP1")
+    ctrl.devices = {d1.id: d1}
+    ctrl.start_sharing([d1])
+    assert entered.wait(1)
+    return ctrl, engines, release
+
+
+def test_quit_waits_for_an_in_flight_start_and_closes_its_engine(tmp_path: Path, monkeypatch) -> None:
+    ctrl, engines, _release = _quit_during_start(tmp_path, monkeypatch, start_s=0.2)
+
+    t0 = time.monotonic()
+    ctrl.stop()
+
+    assert time.monotonic() - t0 < 1
+    assert len(engines) == 1 and engines[0].signalled and engines[0].joined
+    assert not ctrl._app_poll.is_alive()
+
+
+def test_quit_gives_up_on_a_hung_start_at_the_budget(tmp_path: Path, monkeypatch, caplog) -> None:
+    monkeypatch.setattr(controller_module, "QUIT_S", 0.2)
+    ctrl, engines, release = _quit_during_start(tmp_path, monkeypatch, start_s=2)
+    try:
+        t0 = time.monotonic()
+        ctrl.stop()
+        assert time.monotonic() - t0 < 0.5
+        assert "abandoning 1 app poll" in caplog.text
+        assert not engines[0].signalled             # still inside start(): abandoned
+    finally:
+        release.set()
+        ctrl._app_poll.join(1)
+
+
+def test_quit_joins_a_poll_left_behind_by_a_restart(tmp_path: Path, monkeypatch) -> None:
+    ctrl, engines, _release = _quit_during_start(tmp_path, monkeypatch, start_s=0.2)
+    old_poll = ctrl._app_poll
+    ctrl.stop_sharing()
+    ctrl.start_sharing([ctrl.devices["EP1"]])        # new poll; the old one still starting
+
+    ctrl.stop()
+
+    assert not old_poll.is_alive()
+    assert engines[0].signalled and engines[0].joined
+
+
+
+def test_quit_with_every_output_gone_still_unwinds_the_session(tmp_path: Path) -> None:
+    b = _backend(engine="hub")
+    ctrl = _ctrl(tmp_path, backend=b)
+    d1 = _dev("EP1")
+    ctrl.devices = {d1.id: d1}
+    ctrl.start_sharing([d1])
+    ctrl._on_disconnect(d1.id)                           # no output left: REPAIRING
+    assert ctrl.session.state == SessionState.REPAIRING
+
+    ctrl.stop()
+
+    b.destroy_sink.assert_called_once()
+    assert ctrl._app_poll_stop.is_set()                  # so the quit never waits out the poll
 
 
 if __name__ == "__main__":

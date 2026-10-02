@@ -648,6 +648,82 @@ def test_set_legs_sent_once_while_engine_legs_lag(monkeypatch):
     assert calls == [["dev_a"]]
 
 
+# -- A restart never waits on the old session's slow start (no lock spans set_app_routes) --
+
+class _GateEngine(_FakeEngine):
+    """The first start() blocks until `release` (a hung process-loopback activation);
+    later ones start at once."""
+    entered = threading.Event()
+    release = threading.Event()
+
+    def start(self) -> None:
+        if not _GateEngine.entered.is_set():
+            _GateEngine.entered.set()
+            _GateEngine.release.wait(1)
+        super().start()
+
+
+def _restart_during_slow_start(monkeypatch):
+    """Old session's poll is stuck in Engine(pid=1).start(); the session restarts and
+    the new poll adopts its own pid 1 engine. Returns (backend, old poll thread)."""
+    b = _hub_session(monkeypatch)
+    monkeypatch.setattr(backend_mod, "Engine", _GateEngine)
+    _GateEngine.entered = threading.Event()
+    _GateEngine.release = threading.Event()
+    old = b.apps_gen
+    t = threading.Thread(target=b.set_app_routes, args=({1: ["dev_a"]}, old))
+    t.start()
+    assert _GateEngine.entered.wait(1)
+    b.destroy_sink(VirtualSink(None, "cable_in"))
+    b.create_sink([_dev("dev_a")])
+
+    t0 = time.monotonic()
+    b.set_app_routes({1: ["dev_b"]}, gen=b.apps_gen)
+    assert time.monotonic() - t0 < 0.5           # not queued behind the hung start
+    return b, t
+
+
+def test_restart_adopts_its_engines_while_the_old_start_hangs(monkeypatch):
+    b, t = _restart_during_slow_start(monkeypatch)
+    stale, fresh = _FakeEngine.instances
+    assert b._apps == {1: fresh} and fresh.started and fresh.legs == ["dev_b"]
+
+    _GateEngine.release.set()
+    t.join(1)
+    assert stale.started and stale.stopped       # signalled, never adopted
+    assert b._apps == {1: fresh} and not fresh.stopped
+    assert b._app_legs == {1: frozenset({"dev_b"})} and b._failed_apps == set()
+    b.close(1)
+    assert stale.joined
+
+
+def test_a_stale_start_failing_late_is_not_recorded_as_a_new_failure(monkeypatch):
+    b, t = _restart_during_slow_start(monkeypatch)
+    _FakeEngine.fail_start_pids = {1}            # the hung start now fails
+
+    _GateEngine.release.set()
+    t.join(1)
+    assert b._failed_apps == set()
+    assert list(b._apps) == [1] and b._app_legs == {1: frozenset({"dev_b"})}
+
+
+def test_a_stale_gen_never_touches_the_new_sessions_engines(monkeypatch):
+    b = _hub_session(monkeypatch)
+    old = b.apps_gen
+    b.destroy_sink(VirtualSink(None, "cable_in"))
+    b.create_sink([_dev("dev_a")])
+    b.set_app_routes({1: ["dev_a"]}, gen=b.apps_gen)
+    fresh = _FakeEngine.instances[0]
+    calls = []
+    fresh.set_legs = lambda ids: calls.append(list(ids))
+
+    b.set_app_routes({1: ["dev_b"]}, gen=old)    # would change its legs
+    b.set_app_routes({}, gen=old)                # would drop it
+
+    assert calls == [] and not fresh.stopped
+    assert b._apps == {1: fresh} and len(_FakeEngine.instances) == 1
+
+
 # -- Stopping never waits for a pump to exit: engines are signalled, then reaped --
 
 class _SlowJoinEngine(_FakeEngine):
@@ -732,3 +808,37 @@ def test_close_waits_for_reapers_up_to_its_timeout(monkeypatch):
     _SlowJoinEngine.release.set()
     b.close(timeout=1)
     assert engine.joined
+
+
+def test_close_joins_a_reaper_started_while_it_waits(monkeypatch):
+    b = _slow_join(monkeypatch)
+    b.create_sink([_dev("dev_a")])
+    b.set_app_routes({1: ["dev_a"], 2: ["dev_a"]})
+    e1, e2 = _FakeEngine.instances
+    b.set_app_routes({2: ["dev_a"]})             # e1 -> the first reaper, wedged on release
+    gate2 = threading.Event()
+    stop2 = e2.stop
+    e2.stop = lambda wait=True: (wait and gate2.wait(1), stop2(wait))
+    seen = []
+    closer = threading.Thread(target=lambda: (b.close(1), seen.append(e2.joined)))
+    closer.start()
+    time.sleep(0.05)                             # close() is now waiting on the first reaper
+
+    b.destroy_sink(VirtualSink(None, "cable_in"))  # e2 -> a second reaper, mid-close
+    _SlowJoinEngine.release.set()
+    time.sleep(0.05)                             # the first reaper is done; the second still gated
+    gate2.set()
+    closer.join(1)
+    assert seen == [True]                        # close() waited for the second one too
+
+
+def test_close_warns_naming_what_it_abandons(monkeypatch, caplog):
+    b = _slow_join(monkeypatch)
+    b.create_sink([_dev("dev_a")])
+    b.set_app_routes({7: ["dev_a"]})
+    b.destroy_sink(VirtualSink(None, "cable_in"))
+
+    b.close(timeout=0.05)
+
+    assert "abandoning pipemix-engine-reaper (pid 7)" in caplog.text
+    _SlowJoinEngine.release.set()
