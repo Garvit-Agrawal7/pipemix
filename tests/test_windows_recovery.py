@@ -4,11 +4,10 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pipemix.models import AudioDevice, DeviceKind, VirtualSink
-from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
-from pipemix.linux.services.config.config_manager import ConfigManager
+from pipemix.models import BackendError, BackendHealth, BackendStatus
+from pipemix.config import ConfigManager
 from pipemix.windows.controller import Controller
 
 

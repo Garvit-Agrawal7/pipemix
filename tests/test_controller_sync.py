@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 _gi_mock = MagicMock()
 
@@ -36,11 +35,11 @@ sys.modules.setdefault("gi", _gi_mock)
 sys.modules.setdefault("gi.repository", _gi_mock.repository)
 
 from pipemix.models import AudioDevice, DeviceKind, SessionState, VirtualSink
-from pipemix.linux.services.backend import BackendHealth, BackendStatus
-from pipemix.linux.services.config.config_manager import ConfigManager
+from pipemix.models import BackendHealth, BackendStatus
+from pipemix.config import ConfigManager
 import pipemix.linux.controller as controller_module
 from pipemix.linux.controller import Controller
-from pipemix.linux.ui.api import Api
+from pipemix.api import Api
 
 A, B = "AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"
 

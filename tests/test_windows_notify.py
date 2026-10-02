@@ -8,7 +8,6 @@ from types import ModuleType
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 NOTIFY = "pipemix.windows.wasapi.notify"
 

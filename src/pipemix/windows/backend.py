@@ -5,7 +5,7 @@ import threading
 import time
 
 from pipemix.models import AudioDevice, VirtualSink
-from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
+from pipemix.models import BackendError, BackendHealth, BackendStatus
 from pipemix.windows.wasapi.devices import PKEY_FriendlyName, default_output_id, list_outputs
 from pipemix.windows.wasapi.engine import Engine
 from pipemix.windows.wasapi import policy as _policy

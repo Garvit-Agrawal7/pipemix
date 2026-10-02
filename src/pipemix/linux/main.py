@@ -11,8 +11,8 @@ from gi.repository import GLib
 
 from pipemix.linux.app import run_gui
 from pipemix.linux.controller import Controller
-from pipemix.linux.services.backend.pactl_backend import PactlBackend
-from pipemix.linux.services.config.config_manager import ConfigManager
+from pipemix.linux.pactl_backend import PactlBackend
+from pipemix.config import ConfigManager
 
 log = logging.getLogger("pipemix.main")
 

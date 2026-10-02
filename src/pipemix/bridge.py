@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pipemix.linux.controller import Controller
-    from pipemix.linux.ui.api import Api
+    from pipemix.api import Api
 
 log = logging.getLogger(__name__)
 

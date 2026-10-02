@@ -8,11 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-
 from pipemix.models import AudioDevice, DeviceKind, SessionState, VirtualSink
-from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
-from pipemix.linux.services.config.config_manager import ConfigManager
+from pipemix.models import BackendError, BackendHealth, BackendStatus
+from pipemix.config import ConfigManager
 from pipemix.windows import controller as controller_module
 from pipemix.windows.controller import Controller
 

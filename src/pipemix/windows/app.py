@@ -8,9 +8,9 @@ import webview
 
 from pipemix.windows.backend import WasapiBackend
 from pipemix.windows.controller import Controller
-from pipemix.linux.services.config.config_manager import ConfigManager
-from pipemix.linux.ui.api import Api
-from pipemix.linux.ui.bridge import Bridge
+from pipemix.config import ConfigManager
+from pipemix.api import Api
+from pipemix.bridge import Bridge
 
 log = logging.getLogger("pipemix.app")
 

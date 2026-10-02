@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from pipemix.linux.services.backend import BackendError
+from pipemix.models import BackendError
 
 log = logging.getLogger(__name__)
 

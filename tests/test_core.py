@@ -5,12 +5,11 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pipemix.models import AudioDevice, DeviceKind, VirtualSink, path_to_mac, sink_to_mac
-from pipemix.linux.services.backend import pactl_backend
-from pipemix.linux.services.backend.pactl_backend import PactlBackend, _event_kind, _kind, _parse_inputs
-from pipemix.linux.services.config.config_manager import ConfigManager
+from pipemix.linux import pactl_backend
+from pipemix.linux.pactl_backend import PactlBackend, _event_kind, _kind, _parse_inputs
+from pipemix.config import ConfigManager
 
 SINK_INPUTS = """Sink Input #101
 \tSink: 46
