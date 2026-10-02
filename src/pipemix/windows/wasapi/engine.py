@@ -19,15 +19,12 @@ LEG_RETRY_S   = 1.0  # how long a leg that failed to open waits before the next 
 class _Leg:
     """One output endpoint, and the frames queued for it.
 
-    The queue is the drift signal. A leg whose clock runs slower than the
-    source's accepts fewer frames per cycle than arrive, so its queue grows; a
-    leg running faster drains its queue and `write` simply has nothing to give
-    it, which costs one clean primed gap of silence rather than a stall.
+    The queue is the drift signal: a leg slower than the source grows it; a faster
+    one drains it and gets one clean primed gap of silence rather than a stall.
 
-    An endpoint found completely dry while data waits is primed with enough
-    silence that it then holds two device periods plus POLL_MS, so pump jitter
-    and clock phase don't turn into underruns. Queued audio counts towards
-    that, so a stall backlog adds no silence.
+    A dry endpoint with data waiting is primed with silence up to two device
+    periods plus POLL_MS, against pump jitter. Queued audio counts towards that,
+    so a stall backlog adds no silence.
     """
 
     def __init__(self, device_id: str, client, render, frames: int, bpf: int, rate: int,
@@ -53,9 +50,8 @@ class _Leg:
         if padding == 0 and self.fifo:
             from pipemix.windows.wasapi.com import AUDCLNT_BUFFERFLAGS_SILENT
 
-            # Only the silence the queued audio can't cover: a stall's backlog
-            # is the cushion, and padding it with silence would make the
-            # drift trim delete real audio.
+            # Only what queued audio can't cover: padding a stall's backlog with
+            # silence would make the drift trim delete real audio.
             silence = max(0, self.prime + self.period - len(self.fifo) // self.bpf)
             if silence:
                 self.render.GetBuffer(silence)
@@ -71,10 +67,8 @@ class _Leg:
         # Drift is what's left once the endpoint is topped up, so a pump stall's
         # backlog refills the endpoint first instead of being dropped.
         if len(self.fifo) > self.high:
-            # ponytail: drops a block outright when a leg drifts behind. Costs
-            # at most a 15 ms skip, and only on a leg whose clock is off. The
-            # upgrade path is an adaptive resampler driven by
-            # IAudioClock::GetPosition, which is what module-loopback does.
+            # ponytail: drops a block when a leg drifts (<=15 ms skip, off-clock legs only);
+            # upgrade to a resampler on IAudioClock::GetPosition, as module-loopback does.
             dropped = len(self.fifo) - self.keep
             del self.fifo[:dropped]
             log.debug("[leg %s] drift: dropped %d frames", self.id, dropped // self.bpf)
@@ -124,11 +118,9 @@ def _mmcss_leave(handle) -> None:
 class Engine:
     """Mirrors `source_id`, or app `pid`, onto whatever legs are set, on its own pump thread.
 
-    `set_legs` is safe to call from any thread and any apartment: it only
-    records what is wanted. An opener thread opens the legs, because a
-    Bluetooth open can take half a second and the pump must not stall for it;
-    the pump adopts and closes them. Both run in the process MTA, so every COM
-    pointer is valid on either.
+    `set_legs` only records what is wanted, so any thread may call it. An opener
+    thread does the slow opens (Bluetooth: ~0.5 s) so the pump never stalls; the
+    pump adopts and closes legs. Both are in the MTA, so COM pointers work on either.
     """
 
     def __init__(self, source_id: str | None = None, *, pid: int | None = None) -> None:
@@ -395,9 +387,8 @@ class Engine:
                 break
             self._opening.discard(device_id)
             if isinstance(result, Exception):
-                # One dead endpoint must not take the others down, and must not
-                # be retried every 5 ms. It stays wanted, though: an endpoint
-                # held in exclusive mode, or mid profile switch, comes back.
+                # A dead endpoint must not take the others down or be retried every
+                # 5 ms. It stays wanted: exclusive mode or a profile switch can end.
                 (log.debug if device_id in self._retry_at else log.error)(
                     "Engine could not open leg %s: %s", device_id, result)
                 self._retry_at[device_id] = now + LEG_RETRY_S
@@ -446,10 +437,8 @@ class Engine:
             try:
                 leg.write()
             except Exception as e:
-                # An endpoint can be invalidated without going away (a format
-                # change, a Bluetooth profile switch). Drop that leg so it
-                # can't starve the others; it stays wanted, so the next
-                # reconcile reopens it, retrying once a second if that fails.
+                # Invalidated without leaving (format change, Bluetooth profile switch):
+                # drop the leg; it stays wanted, so reconcile reopens it once a second.
                 log.warning("Engine leg %s failed, reopening: %s", device_id, e)
                 self._close_leg(self._legs.pop(device_id))
 

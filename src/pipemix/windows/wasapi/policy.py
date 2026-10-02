@@ -8,12 +8,8 @@ log = logging.getLogger(__name__)
 
 
 def set_default(device_id: str) -> None:
-    """Set `device_id` as the default for all three roles.
-
-    A session that only moves eMultimedia leaves system sounds (eConsole) and
-    calls (eCommunications) behind on the old endpoint, which is not what a
-    user asking to "play everything through X" expects.
-    """
+    """Set `device_id` as the default for all three roles, so system sounds
+    (eConsole) and calls (eCommunications) move too, not just eMultimedia."""
     from pycaw.constants import ERole
     from pycaw.utils import AudioUtilities
 
@@ -27,18 +23,14 @@ def set_default(device_id: str) -> None:
 
 _CLASS_ID = "Windows.Media.Internal.AudioPolicyConfig"
 
-# The QueryInterface IID for the factory's WinRT interface changed with
-# Windows 11 21H2. Only one of the two answers on any given build (Win11
-# 26200 returns the first and refuses the second), so probing in order both
-# selects the interface and tells us which layout we got.
+# The factory's WinRT IID changed in Win11 21H2 and only one answers per build
+# (26200 takes the first), so probing in order also tells us the layout.
 _IID_WIN11 = "{ab3d4648-e242-459f-b02f-541c70306324}"
 _IID_WIN10 = "{2a59116d-6c4f-45e0-a74f-707e3fef9258}"
 
-# IUnknown (0-2) + IInspectable (3-5) + the undocumented slots, of which
-# Windows 11 has two more than Windows 10 — it gained add/remove
-# _ChatContextChanged — so the slot we want is not in the same place on each.
-# Verified on Win11 26200: slot 25 returns S_OK and writes a real entry to
-# HKCU\...\Audio\PolicyConfig\PropertyStore.
+# IUnknown (0-2) + IInspectable (3-5) + undocumented slots; Win11 adds two
+# (add/remove _ChatContextChanged), so the slot moves. Verified on Win11 26200:
+# slot 25 returns S_OK and writes HKCU\...\Audio\PolicyConfig\PropertyStore.
 _SET_PERSISTED_DEFAULT_ENDPOINT = {_IID_WIN11: 25, _IID_WIN10: 23}
 
 # Wrapping form the policy config factory demands — the raw endpoint id is
@@ -90,10 +82,8 @@ def _vtable_fn(ptr: ctypes.c_void_p, index: int, functype):
 class AppRouter:
     """Per-app default output, via the undocumented AudioPolicyConfig factory.
 
-    `available` is False when neither known vtable layout answers — an
-    unsupported Windows version, or a future update that moves the layout
-    again. Callers must check it and hide per-app routing rather than call
-    `route()` blind; nothing else in the app depends on this working.
+    `available` is False when no known vtable layout answers (unsupported or newer
+    Windows); callers must then hide per-app routing. Nothing else depends on it.
     """
 
     def __init__(self) -> None:
@@ -119,17 +109,9 @@ class AppRouter:
     def route(self, pid: int, device_id: str | None) -> None:
         """Persist `device_id` as pid's render default, or clear it if None.
 
-        Unlike `pactl move-sink-input`, this does not move a stream already
-        playing — it is a preference the app picks up next time it opens one.
-
-        Passing None clears the preference, putting the app back on whatever
-        the machine default is. That is the same call with a null device id,
-        and it is what has to happen for every app we moved when a session
-        stops, or they stay pinned to an endpoint the user did not choose.
-
-        The factory refuses a pid that owns no audio session, so this only
-        works on a process that is actually playing something — which is
-        exactly the set the Apps tab lists.
+        A preference the app picks up when it next opens a stream, not a live move.
+        None returns it to the machine default; every app we moved needs that when
+        a session stops. Fails for a pid with no audio session (not in the Apps tab).
         """
         if not self.available:
             log.warning("Per-app routing unavailable; ignoring route(%d, %s)", pid, device_id)

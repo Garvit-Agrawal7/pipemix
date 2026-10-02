@@ -159,8 +159,8 @@ def test_leg_delays_pw_dump_fails(monkeypatch) -> None:
 
 
 def test_latencies_malformed_json(monkeypatch) -> None:
-    # pw-dump's schema is undocumented and shells out to a process we don't control —
-    # an odd-but-valid JSON shape must degrade to {}, never raise, like _sink_names().
+    # pw-dump's schema is undocumented: an odd-but-valid shape must degrade to {},
+    # never raise, like _sink_names().
     backend = PactlBackend()
     for raw in ('{"foo": "bar"}', '"hello world"', "[null]",
                 json.dumps([{"type": "PipeWire:Interface:Node", "info": {

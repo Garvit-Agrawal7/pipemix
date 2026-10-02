@@ -54,9 +54,8 @@ def _dev(id_: str, name: str = "Dev", connected: bool = True) -> AudioDevice:
 class _FakeEngine:
     """Stands in for wasapi.engine.Engine: records legs, never touches COM.
 
-    `fail_start_pids` is a class-level set a test fills in before calling
-    `set_app_routes`, so `start()` raises for those pids only — the same
-    per-test knob `_FakeAppRouter.fail_clear` already uses below.
+    `start()` raises for pids in `fail_start_pids`, a per-test knob like
+    `_FakeAppRouter.fail_clear`.
     """
 
     instances: list["_FakeEngine"] = []
@@ -211,10 +210,8 @@ def test_leader_mode_excludes_leader_from_legs(monkeypatch):
 
 
 def test_hub_mode_creates_no_engine_and_covers_every_device_in_legs(monkeypatch):
-    # Hub create_sink starts no CABLE Output engine — per-app routing
-    # replaces it (see set_app_routes below). sink.module is None, but
-    # sink.legs still lists every selected device, matching what the Apps
-    # tab / UI reads off the session regardless of engine mode.
+    # Hub mode starts no engine (per-app routing replaces it), so sink.module is
+    # None, but sink.legs still lists every selected device for the UI.
     b = _backend(monkeypatch, hub=True, default="original")
     devices = [_dev("dev_a"), _dev("dev_b")]
     sink = b.create_sink(devices)
@@ -234,11 +231,9 @@ def test_create_sink_leaves_the_default_alone(monkeypatch):
 
 # -- the sink's name has to be a real endpoint --
 
-# The Controller feeds `session.sink.name` straight back to `set_default`,
-# `set_volume` and `move_stream` (that is what `active_sink()` hands out), so
-# on Windows it must name an endpoint WASAPI knows. Naming it `pipemix_<uuid>`
-# the way Linux does would make every one of those calls fail with
-# E_INVALIDARG.
+# The Controller passes `session.sink.name` to `set_default`, `set_volume` and
+# `move_stream`, so it must be a real endpoint; a Linux-style `pipemix_<uuid>`
+# would fail each with E_INVALIDARG.
 
 def test_hub_mode_names_the_sink_after_cable_input(monkeypatch):
     b = _backend(monkeypatch, hub=True, default="original")

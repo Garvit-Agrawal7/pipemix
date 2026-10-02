@@ -18,11 +18,8 @@ class SignalEmitter:
     def emit(self, name: str, *args) -> None:
         for handler in list(self._handlers.get(name, ())):
             try:
-                # The emitter goes first, because GObject does that and the
-                # handlers on the other end are shared with the Linux build:
-                # `Bridge._on_health(self, _controller, status)`. Calling them
-                # with the payload alone raises a TypeError per signal and the
-                # page never updates.
+                # Emitter first, as GObject does: the handlers are shared with Linux
+                # (`Bridge._on_health(self, _controller, status)`) and would TypeError.
                 handler(self, *args)
             except Exception:
                 # A dead handler on the UI side must not take a routing

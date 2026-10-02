@@ -25,9 +25,8 @@ AUDIO_UUIDS = frozenset({
 
 class DeviceMonitor:
     """
-    Calls on_connected / on_disconnected / on_property with a MAC address
-    ("61:C5:02:3A:59:49") as BlueZ reports changes. Set the callbacks, call
-    start(), and keep a GLib main loop running.
+    Reports BlueZ changes by MAC via on_connected / on_disconnected / on_property.
+    Set the callbacks, call start(), and keep a GLib main loop running.
     """
 
     def __init__(self) -> None:

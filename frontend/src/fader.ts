@@ -27,10 +27,7 @@ export function keyValue(e: KeyboardEvent, v: number): number | null {
   return null;
 }
 
-/**
- * pactl forks a process per call, so a drag sends at most one every 60ms,
- * plus a final one on release so the last position always lands.
- */
+/** pactl forks per call: a drag sends at most one every 60ms, plus a final one on release. */
 export function useEmit() {
   const th = useRef({ t: 0, timer: 0 });
   useEffect(() => () => clearTimeout(th.current.timer), []);

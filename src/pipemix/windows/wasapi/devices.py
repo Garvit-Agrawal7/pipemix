@@ -53,9 +53,8 @@ def _to_audio_device(dev) -> AudioDevice:
 def is_virtual(enumerator: str | None) -> bool:
     """A software device with no hardware behind it.
 
-    Windows has no "this is virtual" flag, but a driver with no bus enumerates
-    under ROOT — which is what VB-CABLE, Voicemeeter and friends report, and
-    what real sound cards never do (they come up HDAUDIO, USB, BTHENUM, PCI).
+    Windows has no virtual flag, but bus-less drivers (VB-CABLE, Voicemeeter)
+    enumerate under ROOT; real cards come up HDAUDIO, USB, BTHENUM or PCI.
     """
     return (enumerator or "").upper() == "ROOT"
 
@@ -63,17 +62,13 @@ def is_virtual(enumerator: str | None) -> bool:
 def list_outputs(include_virtual: bool = False) -> list[AudioDevice]:
     """Every active render endpoint, exactly as Windows reports it.
 
-    A Bluetooth headset shows up twice — "Headphones (Stereo)" and "Headset
-    (Hands-Free)" — because Windows exposes two endpoints. Both rows are kept;
-    they really are two different things to play to.
+    A Bluetooth headset appears twice (Stereo and Hands-Free); both are kept, as
+    they are two real outputs.
 
-    Virtual endpoints are left out, because they are not somewhere a person can
-    hear anything: VB-CABLE's "CABLE Input" is a pipe into PipeMix's own hub,
-    and feeding it as an output in hub mode would loop the engine's output back
-    into the source it captures from. `PactlBackend.list_outputs` drops
-    `node.virtual` sinks for exactly this reason. `include_virtual=True` is for
-    the VB-CABLE probe in `WasapiBackend._find_cable`, which has to see the
-    cable precisely because it is one.
+    Virtual endpoints are left out: nobody hears them, and feeding CABLE Input in
+    hub mode would loop the engine into its own source (`PactlBackend` drops
+    `node.virtual` for the same reason). `include_virtual=True` is for the
+    VB-CABLE probe in `WasapiBackend._find_cable`.
     """
     # pycaw is imported here, not at module scope, so `device_kind` stays
     # importable (and testable) on a machine without comtypes.

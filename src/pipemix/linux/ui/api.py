@@ -29,10 +29,8 @@ def call(fn: Callable) -> Callable:
 class Api:
 
     def __init__(self, controller: Controller) -> None:
-        # Underscored on purpose: pywebview walks every public non-callable
-        # attribute of js_api to build the JS surface, and recursing into the
-        # Controller reaches SharingSession, an unhashable dataclass, which
-        # blows up its exposed-object set. Only the @call methods are public.
+        # Underscored: pywebview recurses into public attributes to build the JS
+        # surface and crashes on the unhashable SharingSession inside the Controller.
         self._controller = controller
         self._selected: dict[str, bool] = {}
 
@@ -55,8 +53,7 @@ class Api:
             elif dev in self._controller.session.devices:
                 self._selected[dev.id] = True
             self._selected.setdefault(dev.id, dev.id in wanted)
-            # "target" is what lets the page tell a device that dropped out of a
-            # live session apart from one that was simply never enabled.
+            # "target" tells a device that dropped out of the session from one never enabled.
             out.append({
                 **to_json(dev),
                 "selected": self._selected[dev.id],

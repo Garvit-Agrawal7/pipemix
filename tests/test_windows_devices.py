@@ -33,10 +33,8 @@ def test_enumerator_case_does_not_matter():
     assert device_kind("bthenum", None) is DeviceKind.BLUETOOTH
 
 
-# A virtual endpoint is not somewhere a person can hear anything, and in hub
-# mode VB-CABLE's "CABLE Input" is PipeMix's own plumbing — offering it as an
-# output would loop the engine's output back into the source it captures from.
-# PactlBackend drops `node.virtual` sinks for the same reason.
+# Virtual endpoints are inaudible, and in hub mode "CABLE Input" is our own plumbing:
+# offering it would loop the engine into its own source (as PactlBackend's node.virtual).
 
 def test_root_enumerated_devices_are_virtual():
     assert is_virtual("ROOT") is True

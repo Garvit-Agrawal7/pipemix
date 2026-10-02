@@ -78,8 +78,7 @@ def test_every_role_refused_raises(monkeypatch, router):
     monkeypatch.setattr(policy, "_vtable_fn", fake)
     with pytest.raises(OSError) as e:
         router.route(1234, "{0.0.0.00000000}.{abc}")
-    # E_INVALIDARG here is about the pid, not the device id — saying otherwise
-    # sends whoever reads the log hunting the wrong bug.
+    # E_INVALIDARG here is about the pid, not the device id; the log must say so.
     assert "no audio session" in str(e.value)
 
 

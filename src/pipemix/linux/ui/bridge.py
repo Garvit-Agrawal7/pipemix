@@ -48,12 +48,9 @@ class Bridge:
         """
         Deliver pushes off the main thread, one at a time and in order.
 
-        pywebview's evaluate_js queues the script with glib.idle_add and then
-        blocks on a semaphore until the result comes back. Called from the GTK
-        main thread that is a guaranteed deadlock: the idle callback it is
-        waiting for cannot run, because the thread that would run it is the one
-        blocked. BlueZ connect and disconnect handlers fire on exactly that
-        thread, so every push has to be handed to a worker instead.
+        evaluate_js queues work with glib.idle_add and blocks until it runs, so
+        calling it from the GTK main thread deadlocks. BlueZ handlers fire on that
+        thread, so every push goes through a worker.
         """
         while True:
             script = self._queue.get()
