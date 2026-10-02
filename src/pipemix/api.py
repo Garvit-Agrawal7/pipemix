@@ -41,7 +41,7 @@ class Api:
         if devices is None:
             devices = list(self._controller.devices.values())
 
-        preset = self._controller.presets.get(self._controller.last_preset or "", {})
+        preset = self._controller.config.presets.get(self._controller.config.last_preset or "", {})
         wanted = preset.get("devices", [])
 
         out = []
@@ -79,8 +79,8 @@ class Api:
 
     def _clear_preset(self) -> None:
         """A hand-toggled device no longer matches the preset."""
-        if self._controller.last_preset:
-            self._controller.last_preset = None
+        if self._controller.config.last_preset:
+            self._controller.config.last_preset = None
 
     # ---------- What the page asks for on load ----------
 
@@ -94,7 +94,7 @@ class Api:
             "master":  self._controller.master_volume,
             "sink":    self._controller.active_sink(),
             "presets": self._presets(),
-            "preset":  self._controller.last_preset,
+            "preset":  self._controller.config.last_preset,
         }
 
     # ---------- Devices ----------
@@ -154,23 +154,23 @@ class Api:
     def _presets(self) -> list[dict]:
         return [
             {"id": pid, "name": p.get("name", pid), "devices": p.get("devices", [])}
-            for pid, p in self._controller.presets.items()
+            for pid, p in self._controller.config.presets.items()
         ]
 
     @call
     def select_preset(self, preset_id: str | None) -> dict:
         """Load a preset's device set, or clear back to a hand-made selection."""
         if preset_id is None:
-            self._controller.last_preset = None
+            self._controller.config.last_preset = None
             return {"devices": self._devices_payload(), "preset": None}
 
-        preset = self._controller.presets.get(preset_id)
+        preset = self._controller.config.presets.get(preset_id)
         if not preset:
             raise BackendError(f"No preset named '{preset_id}'.")
 
         wanted = preset.get("devices", [])
         log.info("Loading preset '%s': %s", preset.get("name"), wanted)
-        self._controller.last_preset = preset_id
+        self._controller.config.last_preset = preset_id
 
         with self._controller._lock:
             for dev_id in self._selected:
@@ -189,16 +189,16 @@ class Api:
         if not device_ids:
             raise BackendError("Enable at least one output before saving a preset.")
 
-        preset_id = self._controller.save_preset(name, device_ids)
-        self._controller.last_preset = preset_id
+        preset_id = self._controller.config.save_preset(name, device_ids)
+        self._controller.config.last_preset = preset_id
         return {"presets": self._presets(), "preset": preset_id}
 
     @call
     def delete_preset(self, preset_id: str) -> dict:
-        self._controller.delete_preset(preset_id)
-        if self._controller.last_preset == preset_id:
-            self._controller.last_preset = None
-        return {"presets": self._presets(), "preset": self._controller.last_preset}
+        self._controller.config.delete_preset(preset_id)
+        if self._controller.config.last_preset == preset_id:
+            self._controller.config.last_preset = None
+        return {"presets": self._presets(), "preset": self._controller.config.last_preset}
 
     # ---------- Recovery ----------
 

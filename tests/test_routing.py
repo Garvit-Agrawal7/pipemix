@@ -371,10 +371,10 @@ def test_orphan_cleanup_on_start(tmp_path: Path) -> None:
 
 def test_preset_save_and_apply(tmp_path: Path) -> None:
     ctrl = _ctrl(tmp_path)
-    pid = ctrl.save_preset("Movie Mode", ["AA:BB", "CC:DD"])
+    pid = ctrl.config.save_preset("Movie Mode", ["AA:BB", "CC:DD"])
 
-    assert pid in ctrl.presets
-    assert ctrl.presets[pid]["devices"] == ["AA:BB", "CC:DD"]
+    assert pid in ctrl.config.presets
+    assert ctrl.config.presets[pid]["devices"] == ["AA:BB", "CC:DD"]
 
 
 # -- Bluetooth disconnect mid-session rebuilds on remaining --

@@ -209,7 +209,7 @@ def test_config_roundtrip(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     cfg = ConfigManager(path)
     cfg.data["devices"]["61:C5:02:3A:59:49"] = 'Boat "Airdopes"'
-    cfg.save_preset("movie_mode", "Movie Mode", ["61:C5:02:3A:59:49"])
+    assert cfg.save_preset("Movie Mode", ["61:C5:02:3A:59:49"]) == "movie_mode"
     cfg.data["last_preset"] = "movie_mode"
     cfg.save()
 
