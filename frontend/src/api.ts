@@ -8,12 +8,7 @@ declare global {
 type Envelope<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export async function call<T>(name: string, ...args: unknown[]): Promise<T> {
-  const api = window.pywebview?.api;
-  if (!api) throw new Error(`Bridge not ready: ${name}`);
-  // A missing method means the page and Api disagree, usually a stale frontend build.
-  const fn = api[name];
-  if (!fn) throw new Error(`No such bridge method: ${name}. Rebuild the frontend.`);
-  const res = (await fn(...args)) as Envelope<T>;
+  const res = (await window.pywebview!.api[name](...args)) as Envelope<T>;
   if (!res?.ok) throw new Error(res?.error ?? `${name} failed`);
   return res.value;
 }

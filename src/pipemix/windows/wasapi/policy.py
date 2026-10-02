@@ -55,7 +55,7 @@ def _combase():
     return dll
 
 
-def _get_factory(class_id: str, iid: str) -> ctypes.c_void_p | None:
+def _get_factory(iid: str) -> ctypes.c_void_p | None:
     import comtypes
 
     dll = _combase()
@@ -64,7 +64,7 @@ def _get_factory(class_id: str, iid: str) -> ctypes.c_void_p | None:
     )(("RoGetActivationFactory", dll))
 
     class_id_h = ctypes.c_void_p()
-    if dll.WindowsCreateString(class_id, len(class_id), ctypes.byref(class_id_h)) < 0:
+    if dll.WindowsCreateString(_CLASS_ID, len(_CLASS_ID), ctypes.byref(class_id_h)) < 0:
         return None
     try:
         factory = ctypes.c_void_p()
@@ -92,7 +92,7 @@ class AppRouter:
         self.available = False
         for iid in (_IID_WIN11, _IID_WIN10):
             try:
-                ptr = _get_factory(_CLASS_ID, iid)
+                ptr = _get_factory(iid)
             except OSError:
                 ptr = None
             if ptr:
@@ -113,10 +113,6 @@ class AppRouter:
         None returns it to the machine default; every app we moved needs that when
         a session stops. Fails for a pid with no audio session (not in the Apps tab).
         """
-        if not self.available:
-            log.warning("Per-app routing unavailable; ignoring route(%d, %s)", pid, device_id)
-            return
-
         from pycaw.constants import EDataFlow, ERole
 
         dll = _combase()
@@ -133,15 +129,14 @@ class AppRouter:
                     ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
                 ),
             )
-            failures = []
-            for role in (ERole.eConsole.value, ERole.eMultimedia.value):
-                hr = set_fn(self._ptr, pid, EDataFlow.eRender.value, role, device_h)
-                if hr < 0:
-                    failures.append((role, hr))
+            hrs = [
+                set_fn(self._ptr, pid, EDataFlow.eRender.value, role, device_h)
+                for role in (ERole.eConsole.value, ERole.eMultimedia.value)
+            ]
             # Roles are set independently and one can be refused while another
             # is accepted, so only a clean sweep of failures is an error.
-            if len(failures) == 2:
-                hr = failures[0][1]
+            if all(hr < 0 for hr in hrs):
+                hr = hrs[0]
                 if hr & 0xFFFFFFFF == 0x80070057:
                     # E_INVALIDARG here means the pid, not the device id — the
                     # factory refuses a process that owns no audio session.

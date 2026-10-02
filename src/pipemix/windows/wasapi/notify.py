@@ -10,6 +10,8 @@ from pycaw.api.mmdeviceapi import IMMNotificationClient
 from pycaw.constants import DEVICE_STATE, EDataFlow
 from pycaw.utils import AudioUtilities
 
+from pipemix.windows.wasapi.devices import list_outputs
+
 log = logging.getLogger(__name__)
 
 _STOP = object()
@@ -76,14 +78,6 @@ class DeviceMonitor:
         self._worker = None
         log.info("DeviceMonitor stopped.")
 
-    def connected(self) -> list[str]:
-        """Endpoint ids currently active, for the Controller's initial state."""
-        return sorted(self._active)
-
-    def _render_endpoints(self) -> list:
-        from pipemix.windows.wasapi.devices import list_outputs
-        return list_outputs()
-
     def _is_active(self, device_id: str) -> bool:
         try:
             dev = self._enumerator.GetDevice(device_id)
@@ -106,7 +100,7 @@ class DeviceMonitor:
         try:
             try:
                 self._enumerator = AudioUtilities.GetDeviceEnumerator()
-                self._active = {d.id for d in self._render_endpoints()}
+                self._active = {d.id for d in list_outputs()}
                 self._client = _NotificationClient(self._queue.put)
                 self._enumerator.RegisterEndpointNotificationCallback(self._client)
             except Exception as e:
@@ -149,16 +143,3 @@ class DeviceMonitor:
             if self.on_disconnect:
                 self.on_disconnect(device_id)
 
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    comtypes.CoInitialize()
-    mon = DeviceMonitor()
-    mon.on_connect = lambda i: print("CONNECT   ", i)
-    mon.on_disconnect = lambda i: print("DISCONNECT", i)
-    mon.start()
-    print("Watching endpoints. Plug or unplug something; Ctrl-C to stop.")
-    try:
-        threading.Event().wait()
-    except KeyboardInterrupt:
-        mon.stop()

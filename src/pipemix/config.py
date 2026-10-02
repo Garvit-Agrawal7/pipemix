@@ -30,10 +30,6 @@ class ConfigManager:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or _default_path()
-        self.data: dict = {
-            "devices": {}, "presets": {}, "last_preset": None, "prev_default": None,
-            "pinned_apps": [],
-        }
         self.load()
 
     def load(self) -> None:

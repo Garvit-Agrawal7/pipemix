@@ -49,15 +49,15 @@ class Controller(GObject.Object):
         "streams-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
     }
 
-    def __init__(self, backend: PactlBackend, config: ConfigManager | None = None) -> None:
+    def __init__(self, backend: PactlBackend, config: ConfigManager) -> None:
         super().__init__()
         self.backend = backend
-        self.config = config or ConfigManager()
+        self.config = config
 
-        self.monitor = DeviceMonitor()
-        self.monitor.on_connect = lambda mac: self._bg(self._on_connect, mac)
-        self.monitor.on_disconnect = lambda mac: self._bg(self._on_disconnect, mac)
-        self.monitor.on_property = lambda mac, key, value: self._bg(self._on_property, mac, key, value)
+        self.monitor = DeviceMonitor(
+            lambda mac: self._bg(self._on_connect, mac),
+            lambda mac: self._bg(self._on_disconnect, mac),
+        )
 
         # BlueZ and pactl-subscribe jobs run in order on pipemix-events, off the GTK loop.
         self._jobs: queue.SimpleQueue = queue.SimpleQueue()
@@ -113,10 +113,7 @@ class Controller(GObject.Object):
 
     def stop(self) -> None:
         if self.session.is_active:
-            try:
-                self.stop_sharing()
-            except Exception as e:
-                log.error("Failed to stop sharing during shutdown: %s", e)
+            self.stop_sharing()
         # Moving a stream to the default sink clears its pin, so apps follow the default
         # again. Done before the app hubs go, or their streams drop out for a beat.
         default = self.backend.get_default()
@@ -143,12 +140,9 @@ class Controller(GObject.Object):
 
     def clean_orphans(self) -> None:
         """Destroy virtual sinks left behind by a previous crash."""
-        try:
-            for sink in self.backend.find_orphans():
-                log.warning("Destroying orphaned sink: %s", sink.name)
-                self.backend.destroy_sink(sink)
-        except Exception as e:
-            log.error("Error during crash recovery: %s", e)
+        for sink in self.backend.find_orphans():
+            log.warning("Destroying orphaned sink: %s", sink.name)
+            self.backend.destroy_sink(sink)
 
     # ---------- Devices ----------
 
@@ -210,12 +204,9 @@ class Controller(GObject.Object):
         level, unmute = self._levels.pop(sink, (None, False))
         if level is None:
             return  # a direct set already replaced it
-        try:
-            if unmute:
-                self.backend.set_mute(sink, False)
-            self.backend.set_volume(sink, level)
-        except Exception as e:
-            log.warning("Failed to set the level on %s: %s", sink, e)
+        if unmute:
+            self.backend.set_mute(sink, False)
+        self.backend.set_volume(sink, level)
 
     @locked  # so a routing change can't land between picking the sink and queueing
     def set_device_volume(self, dev_id: str, volume: int, unmute: bool = False) -> None:
@@ -302,7 +293,7 @@ class Controller(GObject.Object):
         """A wired output showed up or left, or a session Bluetooth sink was recreated."""
         try:
             wired = {d.id for d in self.backend.list_outputs() if d.kind != DeviceKind.BLUETOOTH}
-        except Exception as e:
+        except Exception as e:  # don't let a pactl hiccup swallow this batch's streams push
             log.error("Failed to check for hotplug: %s", e)
             return
         known = {i for i, d in self.devices.items() if d.kind != DeviceKind.BLUETOOTH and d.connected}
@@ -346,8 +337,7 @@ class Controller(GObject.Object):
             self._route(devices)
             self._adopt(devices)
             log.info("Session active: %s", self.active_sink())
-        except Exception as e:
-            log.error("Failed to start session: %s", e)
+        except Exception:
             self._set_state(SessionState.ERROR)
             self.stop_sharing()
             raise
@@ -462,31 +452,26 @@ class Controller(GObject.Object):
     @locked
     def stop_sharing(self) -> None:
         self._set_state(SessionState.STOPPING)
-        try:
-            if self.prev_default:
-                try:
-                    self.backend.set_default(self.prev_default)
-                    # Moved before the hubs go, or streams still in them drop
-                    # out for a beat. Ones pinned to a single device stay put.
-                    pinned = [s for s in self.overrides if s not in self.hubs]
-                    self.backend.move_streams(self.prev_default, exclude=pinned)
-                except Exception as e:
-                    log.warning("Could not restore original default sink: %s", e)
+        if self.prev_default:
+            try:
+                self.backend.set_default(self.prev_default)
+                # Moved before the hubs go, or streams still in them drop
+                # out for a beat. Ones pinned to a single device stay put.
+                pinned = [s for s in self.overrides if s not in self.hubs]
+                self.backend.move_streams(self.prev_default, exclude=pinned)
+            except Exception as e:
+                log.warning("Could not restore original default sink: %s", e)
 
-            if self.session.sink:
-                self.backend.destroy_sink(self.session.sink)
-            self._drop_hubs()
+        if self.session.sink:
+            self.backend.destroy_sink(self.session.sink)
+        self._drop_hubs()
 
-            self.session.sink = None
-            self.session.devices = []
-            self.targets.clear()
-            self.overrides.clear()
-            self.emit("devices-changed", list(self.devices.values()))
-            self._set_state(SessionState.IDLE)
-        except Exception as e:
-            log.error("Error while stopping session: %s", e)
-            self._set_state(SessionState.ERROR)
-            raise
+        self.session.sink = None
+        self.session.devices = []
+        self.targets.clear()
+        self.overrides.clear()
+        self.emit("devices-changed", list(self.devices.values()))
+        self._set_state(SessionState.IDLE)
 
     # ---------- Bluetooth events ----------
 
@@ -574,12 +559,6 @@ class Controller(GObject.Object):
 
         log.info("Continuing on: %s", [d.name for d in remaining])
         self._set_state(SessionState.ACTIVE)
-
-    def _on_property(self, mac: str, key: str, value: object) -> None:
-        dev = self.devices.get(mac)
-        if dev and key == "Battery":
-            dev.battery = int(value)
-            self.emit("devices-changed", list(self.devices.values()))
 
     @locked
     def _rebuild(self) -> None:

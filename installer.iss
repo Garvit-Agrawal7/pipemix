@@ -9,21 +9,6 @@
 ; (https://vb-audio.com/Services/licensing.htm): the user must be able to see
 ; it is VB-Audio's and that they can donate, hence the finish page text.
 
-#ifndef MyAppVersion
-  #error MyAppVersion must be defined -- build via build_win.py, or pass /DMyAppVersion=x.y.z to ISCC directly
-#endif
-#ifndef PipemixIconFile
-  #error PipemixIconFile must be defined -- build via build_win.py, or pass /DPipemixIconFile=<path to data\icons\pipemix.ico> to ISCC directly
-#endif
-
-#ifndef PipemixDistDir
-  #error PipemixDistDir must be defined -- build via build_win.py, or pass /DPipemixDistDir=<path to the PyInstaller onedir output> to ISCC directly
-#endif
-
-#ifndef VBcableDir
-  #error VBcableDir must be defined -- build via build_win.py, or pass /DVBcableDir=<path to the extracted VB-CABLE package> to ISCC directly
-#endif
-
 #define MyAppName "PipeMix"
 #define MyAppPublisher "PipeMix"
 #define MyAppExeName "pipemix.exe"

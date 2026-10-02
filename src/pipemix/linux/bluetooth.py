@@ -25,14 +25,13 @@ AUDIO_UUIDS = frozenset({
 
 class DeviceMonitor:
     """
-    Reports BlueZ changes by MAC via on_connected / on_disconnected / on_property.
-    Set the callbacks, call start(), and keep a GLib main loop running.
+    Reports BlueZ changes by MAC via on_connect / on_disconnect.
+    Call start() and keep a GLib main loop running.
     """
 
-    def __init__(self) -> None:
-        self.on_connect:    Callable[[str], None] | None = None
-        self.on_disconnect: Callable[[str], None] | None = None
-        self.on_property:   Callable[[str, str, object], None] | None = None
+    def __init__(self, on_connect: Callable[[str], None], on_disconnect: Callable[[str], None]) -> None:
+        self.on_connect = on_connect
+        self.on_disconnect = on_disconnect
 
         self._bus: Gio.DBusConnection | None = None
         self._subs: list[int] = []
@@ -50,8 +49,6 @@ class DeviceMonitor:
         log.info("DeviceMonitor started — listening for BlueZ events.")
 
     def stop(self) -> None:
-        if not self._bus:
-            return
         for sub in self._subs:
             self._bus.signal_unsubscribe(sub)
         self._subs.clear()
@@ -94,16 +91,10 @@ class DeviceMonitor:
         if "Connected" in changed:
             if changed["Connected"]:
                 log.info("[BT] Connected:    %s", mac)
-                if self.on_connect:
-                    self.on_connect(mac)
+                self.on_connect(mac)
             else:
                 log.info("[BT] Disconnected: %s", mac)
-                if self.on_disconnect:
-                    self.on_disconnect(mac)
-
-        for key, value in changed.items():
-            if key != "Connected" and self.on_property:
-                self.on_property(mac, key, value)
+                self.on_disconnect(mac)
 
     def _on_removed(self, _conn, _sender, _path, _iface, _signal, params) -> None:
         # The device object vanished (unpaired, or dropped by BlueZ). Treat as
@@ -112,5 +103,4 @@ class DeviceMonitor:
         mac = path_to_mac(path)
         if DEVICE in ifaces and mac:
             log.debug("[BT] Device object removed: %s", mac)
-            if self.on_disconnect:
-                self.on_disconnect(mac)
+            self.on_disconnect(mac)

@@ -28,6 +28,7 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [quitting, setQuitting] = useState(false);
   const [open, setOpen] = useState(false);
+  const fail = (e: unknown) => setError(msg(e));
 
   // Escape collapses the rail; a confirm showing swallows it first.
   useEffect(() => {
@@ -82,11 +83,11 @@ export default function App() {
           setPresets(s.presets);
           setPreset(s.preset);
         })
-        .catch((e) => setError(msg(e)))
+        .catch(fail)
         .finally(() => setReady(true));
       call<Stream[]>("list_streams")
         .then(setStreams)
-        .catch((e) => setError(msg(e)));
+        .catch(fail);
     });
   }, []);
 
@@ -135,7 +136,7 @@ export default function App() {
               className="railbtn danger"
               aria-label="Confirm shut down"
               title="Shut down PipeMix"
-              onClick={() => call<null>("shutdown").catch((e) => setError(msg(e)))}
+              onClick={() => call<null>("shutdown").catch(fail)}
             >
               <IconPower />
               <span className="rlabel">Yes, shut down</span>
@@ -186,7 +187,7 @@ export default function App() {
               onPresets={setPresets}
               onPreset={setPreset}
               onMaster={setMaster}
-              onError={setError}
+              onError={fail}
             />
           ) : (
             <Apps
@@ -197,7 +198,7 @@ export default function App() {
               streams={streams}
               onMaster={setMaster}
               onStreams={setStreams}
-              onError={setError}
+              onError={fail}
             />
           ))}
       </div>

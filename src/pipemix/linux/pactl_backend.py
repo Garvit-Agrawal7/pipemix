@@ -172,7 +172,7 @@ class PactlBackend:
             chan = next(iter(s.get("volume", {}).values()), None)
             devices.append(AudioDevice(
                 id=sink_to_mac(sink) or sink,
-                name=s.get("description") or self._fallback_name(sink, kind),
+                name=s.get("description") or sink,
                 sink=sink,
                 kind=kind,
                 connected=True,
@@ -181,16 +181,6 @@ class PactlBackend:
 
         log.info("Found %d output(s)", len(devices))
         return devices
-
-    def _fallback_name(self, sink: str, kind: DeviceKind) -> str:
-        if kind == DeviceKind.BLUETOOTH:
-            mac = sink_to_mac(sink)
-            return f"Bluetooth Device ({mac})" if mac else "Bluetooth Device"
-        if kind == DeviceKind.HDMI:
-            return "HDMI Output"
-        if kind == DeviceKind.USB:
-            return "USB Audio Device"
-        return "Built-in Audio"
 
     def _latencies(self) -> dict[str, int]:
         """{sink name: ns the device adds, its latency offset included}. Empty on failure."""

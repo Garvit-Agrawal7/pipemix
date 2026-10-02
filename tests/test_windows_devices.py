@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-
 from pipemix.models import DeviceKind
 from pipemix.windows.wasapi.devices import FORM_FACTOR_DIGITAL_DISPLAY, device_kind, is_virtual
 

@@ -12,11 +12,6 @@ from pipemix.models import BackendError
 log = logging.getLogger(__name__)
 
 
-def _stream_name(display_name: str | None, process_name: str | None, pid: int) -> str:
-    """The app's display name, else its process name, else "pid {pid}"."""
-    return display_name or process_name or f"pid {pid}"
-
-
 @lru_cache(maxsize=64)
 def _package_name(exe: str) -> str | None:
     """The Store package's display name for an exe inside one, else None.
@@ -122,7 +117,7 @@ def list_streams() -> list[dict]:
         session = r["session"]
         process = session.Process
         exe = _process_exe(process)
-        name = _stream_name(session.DisplayName, _process_label(process, exe), r["pid"])
+        name = session.DisplayName or _process_label(process, exe) or f"pid {r['pid']}"
         streams.append({
             "id":       r["pid"],
             "name":     name,
@@ -138,20 +133,10 @@ def list_streams() -> list[dict]:
     return [s for s in streams if s["active"] or s["name"] not in playing]
 
 
-def _find_session(pid: int):
-    for record in _session_records():
-        if record["pid"] == pid:
-            return record["session"]
-    return None
-
-
 def set_stream_mute(pid: int, mute: bool) -> None:
     from pycaw.constants import IID_Empty
 
-    session = _find_session(pid)
+    session = next((r["session"] for r in _session_records() if r["pid"] == pid), None)
     if session is None:
         raise BackendError(f"No audio session found for pid {pid}")
-    try:
-        session.SimpleAudioVolume.SetMute(mute, IID_Empty)
-    except Exception as e:
-        raise BackendError(f"Failed to mute stream {pid}: {e}") from e
+    session.SimpleAudioVolume.SetMute(mute, IID_Empty)

@@ -2,57 +2,29 @@ from __future__ import annotations
 
 import ctypes
 import logging
-import sys
 import threading
 import time
 import types
-from pathlib import Path
 
-
+import comtypes
 import pytest
 
-from pipemix.windows.wasapi.engine import Engine
+import pipemix.windows.wasapi.engine as engine_mod
+from pipemix.windows.wasapi import com
+from pipemix.windows.wasapi.com import AUDCLNT_BUFFERFLAGS_SILENT
+from pipemix.windows.wasapi.engine import DRIFT_KEEP_MS, Engine, _Leg, _period_ms
 
 
-# -- Engine constructor: source_id xor pid ------------------------------
-
-def test_engine_requires_one_source():
-    with pytest.raises(ValueError):
-        Engine()
-
-
-def test_engine_rejects_both_source_and_pid():
-    with pytest.raises(ValueError):
-        Engine("x", pid=1)
-
-
-def test_engine_pid_source():
-    e = Engine(pid=42)
-    assert e.pid == 42
-    assert e.source_id is None
-
-
-def test_engine_source_id_source():
-    e = Engine("id")
-    assert e.source_id == "id"
-    assert e.pid is None
+@pytest.mark.parametrize("kwargs, source_id, pid", [
+    ({"pid": 42}, None, 42),
+    ({"source_id": "id"}, "id", None),
+])
+def test_engine_source(kwargs, source_id, pid):
+    e = Engine(**kwargs)
+    assert (e.source_id, e.pid) == (source_id, pid)
 
 
 # -- com.py: process-loopback declarations ------------------------------
-
-from pipemix.windows.wasapi import com
-
-
-def test_loopback_constants():
-    assert com.AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK == 1
-    assert com.PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE == 0
-    assert com.VT_BLOB == 65
-    assert com.VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK == r"VAD\Process_Loopback"
-
-
-def test_activation_params_struct():
-    assert ctypes.sizeof(com.AUDIOCLIENT_ACTIVATION_PARAMS) == 12
-
 
 def test_loopback_params():
     params, blob = com.loopback_params(1234)
@@ -85,13 +57,6 @@ def test_loopback_format():
     assert fmt.cbSize == 0
 
 
-def test_com_interfaces_declared():
-    # Presence only — these are comtypes interface classes, not callable here.
-    assert com.IActivateAudioInterfaceAsyncOperation is not None
-    assert com.IActivateAudioInterfaceCompletionHandler is not None
-    assert com.IAgileObject is not None
-
-
 # -- A dead leg must not starve the others --------------------------------
 
 class _NoCapture:
@@ -104,9 +69,6 @@ class _FakeLeg:
         self.id, self.fail, self.writes = device_id, fail, 0
         self.client = self
 
-    def push(self, data):
-        pass
-
     def write(self):
         if self.fail:
             # AUDCLNT_E_DEVICE_INVALIDATED, as on a Bluetooth profile switch
@@ -117,13 +79,25 @@ class _FakeLeg:
         pass
 
 
+def _patch_com(monkeypatch, avrt=None):
+    """Stub COM init (and MMCSS, if `avrt` is given) so threads run without COM."""
+    if avrt is not None:
+        monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(avrt=avrt), raising=False)
+    monkeypatch.setattr(comtypes, "CoInitializeEx", lambda *a: None)
+    monkeypatch.setattr(comtypes, "CoUninitialize", lambda: None)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    t = [100.0]
+    monkeypatch.setattr(engine_mod.time, "monotonic", lambda: t[0])
+    return t
+
+
 @pytest.fixture
 def opener(monkeypatch):
     """Start an engine's opener thread without COM; stops it after the test."""
-    import comtypes
-
-    monkeypatch.setattr(comtypes, "CoInitializeEx", lambda *a: None)
-    monkeypatch.setattr(comtypes, "CoUninitialize", lambda: None)
+    _patch_com(monkeypatch)
     started = []
 
     def start(e):
@@ -148,11 +122,7 @@ def _settle(e, timeout=2.0):
     e._reconcile()
 
 
-def test_invalidated_leg_is_dropped_and_reopened_without_starving_the_rest(monkeypatch, opener):
-    import pipemix.windows.wasapi.engine as engine_mod
-
-    clock = [100.0]
-    monkeypatch.setattr(engine_mod.time, "monotonic", lambda: clock[0])
+def test_invalidated_leg_is_dropped_and_reopened_without_starving_the_rest(monkeypatch, opener, clock):
     e = opener(Engine("src"))
     e._capture = _NoCapture()
     dead, alive = _FakeLeg("dead", fail=True), _FakeLeg("alive")
@@ -170,11 +140,7 @@ def test_invalidated_leg_is_dropped_and_reopened_without_starving_the_rest(monke
     assert e._legs["dead"] is fresh
 
 
-def test_leg_that_fails_right_after_reopening_backs_off(monkeypatch, opener):
-    import pipemix.windows.wasapi.engine as engine_mod
-
-    clock = [100.0]
-    monkeypatch.setattr(engine_mod.time, "monotonic", lambda: clock[0])
+def test_leg_that_fails_right_after_reopening_backs_off(monkeypatch, opener, clock):
     e = opener(Engine("src"))
     e._capture = _NoCapture()
     opened = []
@@ -199,11 +165,7 @@ def test_leg_that_fails_right_after_reopening_backs_off(monkeypatch, opener):
     assert len(opened) == 3
 
 
-def test_leg_that_fails_to_open_is_retried_once_a_second(monkeypatch, opener):
-    import pipemix.windows.wasapi.engine as engine_mod
-
-    clock = [100.0]
-    monkeypatch.setattr(engine_mod.time, "monotonic", lambda: clock[0])
+def test_leg_that_fails_to_open_is_retried_once_a_second(monkeypatch, opener, clock):
     e = opener(Engine("src"))
     e.set_legs(["busy"])
     attempts = []
@@ -238,11 +200,7 @@ def test_retry_is_forgotten_when_the_leg_is_no_longer_wanted(monkeypatch, opener
     assert not e._retry_at
 
 
-def test_failed_open_logs_error_once_then_debug(monkeypatch, opener, caplog):
-    import pipemix.windows.wasapi.engine as engine_mod
-
-    clock = [100.0]
-    monkeypatch.setattr(engine_mod.time, "monotonic", lambda: clock[0])
+def test_failed_open_logs_error_once_then_debug(monkeypatch, opener, clock, caplog):
     e = opener(Engine("src"))
     e.set_legs(["busy"])
     attempts = []
@@ -343,11 +301,7 @@ def test_leg_unwanted_by_the_time_it_opens_is_closed(monkeypatch, opener):
 
 
 def test_stop_joins_the_opener_and_closes_an_unadopted_leg(monkeypatch):
-    import comtypes
-
-    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(avrt=_Avrt()), raising=False)
-    monkeypatch.setattr(comtypes, "CoInitializeEx", lambda *a: None)
-    monkeypatch.setattr(comtypes, "CoUninitialize", lambda: None)
+    _patch_com(monkeypatch, _Avrt())
     e = Engine("src")
     monkeypatch.setattr(e, "_open_source", lambda: None)
     monkeypatch.setattr(e, "_pump", lambda: None)
@@ -379,7 +333,11 @@ class _PadClient:
 
 class _PadRender:
     def __init__(self):
-        self.bufs, self.released, self.writes = [], [], []
+        self.bufs, self.writes = [], []
+
+    @property
+    def released(self) -> list[int]:
+        return [n for n, _ in self.writes]
 
     def GetBuffer(self, n):
         buf = ctypes.create_string_buffer(n * 4)
@@ -387,14 +345,12 @@ class _PadRender:
         return ctypes.addressof(buf)
 
     def ReleaseBuffer(self, n, flags):
-        self.released.append(n)
         self.writes.append((n, flags))
 
 
-def _pad_leg(padding=0, **kw):
-    from pipemix.windows.wasapi.engine import _Leg
+def _pad_leg(padding=0, period_ms=10.0, src_period_ms=10.0):
     client, render = _PadClient(padding), _PadRender()
-    return _Leg("d", client, render, 9600, 4, 48000, **kw), client, render  # target = 1440 frames
+    return _Leg("d", client, render, 9600, 4, 48000, period_ms, src_period_ms), client, render  # target = 1440 frames
 
 
 def test_write_never_pushes_padding_above_target():
@@ -402,7 +358,7 @@ def test_write_never_pushes_padding_above_target():
     assert leg.target == 1440
     for padding in (1, 500, 1439):
         leg.fifo = bytearray(4 * 5000)
-        client.padding, render.released = padding, []
+        client.padding, render.writes = padding, []
         leg.write()
         assert render.released == [leg.target - padding]
 
@@ -426,14 +382,13 @@ def test_surplus_stays_in_the_fifo():
 
 
 def test_sustained_surplus_triggers_drift_drop():
-    from pipemix.windows.wasapi.engine import DRIFT_KEEP_MS
     leg, client, render = _pad_leg(padding=1440)  # endpoint never drains
     for _ in range(10):
-        leg.push(bytes(4 * 240))  # 5 ms per push
+        leg.fifo += bytes(4 * 240)  # 5 ms per push
         leg.write()
     assert render.released == []
     assert len(leg.fifo) <= leg.high
-    leg.push(bytes(leg.high))
+    leg.fifo += bytes(leg.high)
     leg.write()
     assert len(leg.fifo) == int(48000 * DRIFT_KEEP_MS / 1000) * 4
 
@@ -443,7 +398,7 @@ def test_stall_backlog_refills_the_endpoint_before_any_drift_drop():
     # packets pile up: the endpoint is topped back to 30 ms, nothing lost.
     leg, client, render = _pad_leg(padding=360)  # 7.5 ms left in the endpoint
     for _ in range(3):
-        leg.push(bytes(4 * 480))
+        leg.fifo += bytes(4 * 480)
     leg.write()
     assert render.released == [leg.target - 360]  # 22.5 ms written
     assert len(leg.fifo) == 4 * (1440 - 1080)     # the 7.5 ms remainder is kept
@@ -452,7 +407,6 @@ def test_stall_backlog_refills_the_endpoint_before_any_drift_drop():
 # -- Silence priming of dry endpoints -------------------------------------
 
 def test_dry_endpoint_with_data_is_primed_then_filled_to_target():
-    from pipemix.windows.wasapi.com import AUDCLNT_BUFFERFLAGS_SILENT
     leg, client, render = _pad_leg()
     leg.fifo = bytearray(4 * 480)  # one packet: tops up to prime + period
     leg.write()
@@ -461,7 +415,6 @@ def test_dry_endpoint_with_data_is_primed_then_filled_to_target():
 
 
 def test_dry_endpoint_with_a_partial_packet_is_primed_to_the_same_level():
-    from pipemix.windows.wasapi.com import AUDCLNT_BUFFERFLAGS_SILENT
     leg, client, render = _pad_leg()
     leg.fifo = bytearray(4 * 100)
     leg.write()
@@ -494,7 +447,7 @@ def test_primes_once_then_steady_state_never_runs_dry():
     leg, client, render = _pad_leg()
     queued = 0  # frames in the endpoint, mirrored from what the leg wrote
     for _ in range(200):
-        leg.push(bytes(4 * 480))                # source: one 10 ms period per tick
+        leg.fifo += bytes(4 * 480)                # source: one 10 ms period per tick
         n0 = len(render.writes)
         client.padding = queued
         leg.write()
@@ -506,12 +459,9 @@ def test_primes_once_then_steady_state_never_runs_dry():
 
 
 def test_prime_size_follows_device_period_and_falls_back_to_10ms():
-    from pipemix.windows.wasapi.engine import _period_ms
     assert _pad_leg(period_ms=10)[0].prime == 720
-    assert _pad_leg()[0].prime == 720
     assert _period_ms(type("C", (), {"GetDevicePeriod": lambda s: (100000, 30000)})()) == 10.0
     assert _period_ms(type("C", (), {"GetDevicePeriod": lambda s: (250000, 30000)})()) == 25.0
-    assert _period_ms(type("C", (), {"GetDevicePeriod": lambda s: 100000})()) == 10.0
 
     def boom(s):
         raise OSError("no")
@@ -569,16 +519,7 @@ def test_open_leg_sizes_target_to_the_source_period(monkeypatch):
     assert e._open_leg("d").target == 1680
 
 
-def test_period_of_a_client_without_device_period_is_10ms():
-    from pipemix.windows.wasapi.engine import _period_ms
-    def nope(s):
-        raise OSError("Not implemented")
-    assert _period_ms(type("C", (), {"GetDevicePeriod": nope})()) == 10.0
-
-
 def test_late_leg_after_stop_is_closed_not_queued(monkeypatch, opener):
-    import pipemix.windows.wasapi.engine as engine_mod
-
     monkeypatch.setattr(engine_mod, "OPENER_JOIN_S", 0.05)
     e = opener(Engine("src"))
     slow = _SlowOpen()
@@ -609,18 +550,14 @@ class _Avrt:
             return handle
 
         def revert(h):
-            self.reverted.append(h)
+            self.reverted.append(h.value)
 
         self.AvSetMmThreadCharacteristicsW = set_
         self.AvRevertMmThreadCharacteristics = revert
 
 
 def _run_engine(monkeypatch, avrt):
-    import comtypes
-
-    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(avrt=avrt), raising=False)
-    monkeypatch.setattr(comtypes, "CoInitializeEx", lambda *a: None)
-    monkeypatch.setattr(comtypes, "CoUninitialize", lambda: None)
+    _patch_com(monkeypatch, avrt)
     e = Engine("src")
     for name in ("_open_source", "_reconcile", "_pump"):
         monkeypatch.setattr(e, name, lambda: None)

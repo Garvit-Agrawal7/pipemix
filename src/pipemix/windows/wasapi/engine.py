@@ -29,23 +29,21 @@ class _Leg:
     """
 
     def __init__(self, device_id: str, client, render, frames: int, bpf: int, rate: int,
-                 period_ms: float = 10.0, *, src_period_ms: float = 10.0) -> None:
+                 period_ms: float, src_period_ms: float) -> None:
         self.id     = device_id
         self.client = client
         self.render = render
         self.frames = frames  # the endpoint's buffer size, in frames
         self.bpf    = bpf     # bytes per frame
-        self.target = int(rate * TARGET_MS / 1000)  # padding we aim for, in frames
         self.prime  = int(rate * (period_ms + POLL_MS) / 1000)  # silence cushion for a dry endpoint
         self.period = int(rate * period_ms / 1000)
-        # Data arrives a source packet at a time: leave room for it after the cushion.
-        self.target = max(self.target, self.prime + max(self.period, int(rate * src_period_ms / 1000)))
+        # Padding we aim for, in frames. Data arrives a source packet at a time:
+        # leave room for it after the cushion.
+        self.target = max(int(rate * TARGET_MS / 1000),
+                          self.prime + max(self.period, int(rate * src_period_ms / 1000)))
         self.fifo   = bytearray()
         self.high   = int(rate * DRIFT_MS / 1000) * bpf
         self.keep   = int(rate * DRIFT_KEEP_MS / 1000) * bpf
-
-    def push(self, data: bytes) -> None:
-        self.fifo += data
 
     def write(self) -> None:
         if not self.fifo:  # nothing to prime, top up or trim: skip the COM call
@@ -81,11 +79,7 @@ class _Leg:
 def _period_ms(client) -> float:
     """The endpoint's default device period in ms; 10 if it can't be read."""
     try:
-        period = client.GetDevicePeriod()
-        period = period[0] if isinstance(period, tuple) else period  # (default, minimum), 100 ns
-        if period > 0:
-            return period / 10_000
-        raise ValueError(period)
+        return client.GetDevicePeriod()[0] / 10_000 or 10.0  # (default, minimum), 100 ns
     except Exception as e:
         log.debug("GetDevicePeriod failed (%s), assuming 10 ms", e)
         return 10.0
@@ -109,14 +103,8 @@ def _mmcss_enter():
 
 
 def _mmcss_leave(handle) -> None:
-    if not handle:
-        return
-    try:
-        revert = ctypes.windll.avrt.AvRevertMmThreadCharacteristics
-        revert.argtypes = [ctypes.c_void_p]  # 64-bit handle, not a C int
-        revert(handle)
-    except Exception as e:  # runs in _run's finally: must not skip CoUninitialize
-        log.debug("MMCSS revert failed: %s", e)
+    if handle:
+        ctypes.windll.avrt.AvRevertMmThreadCharacteristics(ctypes.c_void_p(handle))
 
 
 class Engine:
@@ -128,8 +116,6 @@ class Engine:
     """
 
     def __init__(self, source_id: str | None = None, *, pid: int | None = None) -> None:
-        if (source_id is None) == (pid is None):
-            raise ValueError("Engine needs exactly one of source_id or pid")
         self.source_id = source_id
         self.pid = pid
         self.error: Exception | None = None
@@ -448,7 +434,7 @@ class Engine:
                     else ctypes.string_at(ptr, nbytes)
                 )
                 for leg in self._legs.values():
-                    leg.push(data)
+                    leg.fifo += data
             self._capture.ReleaseBuffer(frames)
 
         for device_id, leg in list(self._legs.items()):

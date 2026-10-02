@@ -1,24 +1,6 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-
-from pipemix.windows.wasapi.sessions import _dedupe_sessions, _stream_name
-
-
-def test_display_name_wins_when_present():
-    assert _stream_name("Spotify", "Spotify.exe", 123) == "Spotify"
-
-
-def test_falls_back_to_process_name():
-    # The common case: almost nothing sets a session display name.
-    assert _stream_name("", "chrome.exe", 456) == "chrome.exe"
-    assert _stream_name(None, "chrome.exe", 456) == "chrome.exe"
-
-
-def test_falls_back_to_pid_when_nothing_else_is_known():
-    assert _stream_name("", None, 789) == "pid 789"
+from pipemix.windows.wasapi.sessions import _dedupe_sessions
 
 
 def test_dedupe_skips_system_sounds_session():
