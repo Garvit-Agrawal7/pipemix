@@ -23,6 +23,8 @@ APP_POLL_S = 1.0
 # How long a paused app keeps its capture, so resuming loses no audio. Capped,
 # or idle legs stream silence forever and Bluetooth links never sleep.
 APP_IDLE_S = 30.0
+# Total time quitting may wait: in-flight app captures finishing, then engines closing.
+QUIT_S = 3.0
 
 
 def locked(fn):
@@ -60,6 +62,8 @@ class Controller(SignalEmitter):
         # the last app list pushed to the page. Only this thread calls
         # backend.set_app_routes, so Engine.start/stop never runs under `_lock`.
         self._app_poll: threading.Thread | None = None
+        # Every poll not yet seen to exit, so quitting joins one a restart left behind.
+        self._app_polls: list[threading.Thread] = []
         self._app_poll_stop: threading.Event | None = None
         self._app_wake: threading.Event | None = None
         self._last_streams: list[dict] | None = None
@@ -93,7 +97,11 @@ class Controller(SignalEmitter):
         self.refresh()
 
     def stop(self) -> None:
-        if self.session.is_active:
+        """Quit: unwind the session, then wait up to QUIT_S in total for the app polls
+        (an in-flight Engine.start hands its late engine to the backend) and for every
+        stopped engine to close. Never called under `_lock`, which the polls need."""
+        deadline = time.monotonic() + QUIT_S
+        if self.session.is_active or self.session.sink:  # a REPAIRING session too
             try:
                 self.stop_sharing()
             except Exception as e:
@@ -106,7 +114,15 @@ class Controller(SignalEmitter):
                 self._sweep_pins(self.backend.list_streams())
             except Exception as e:
                 log.warning("Failed to sweep leftover per-app pins: %s", e)
-        self.backend.close()  # bounded: lets stopped engines close their streams before exit
+        for poll in self._app_polls:
+            poll.join(max(0.0, deadline - time.monotonic()))
+        stuck = [p for p in self._app_polls if p.is_alive()]
+        if stuck:
+            # ponytail: a capture start that never returns is abandoned, killed at exit with the
+            # daemon poll; a process-exit hook or a longer QUIT_S if that bites.
+            log.warning("Quit: abandoning %d app poll(s) still mid-sync (a capture start?) after %.1f s",
+                        len(stuck), QUIT_S)
+        self.backend.close(max(0.0, deadline - time.monotonic()))
         self.monitor.stop()
 
     def clean_orphans(self) -> None:
@@ -447,6 +463,7 @@ class Controller(SignalEmitter):
         self._app_poll = threading.Thread(
             target=self._poll_apps, args=(stop, wake), name="pipemix-app-poll", daemon=True)
         self._app_poll.start()
+        self._app_polls = [p for p in self._app_polls if p.is_alive()] + [self._app_poll]
 
     def _poll_apps(self, stop: threading.Event, wake: threading.Event) -> None:
         while not stop.is_set():
