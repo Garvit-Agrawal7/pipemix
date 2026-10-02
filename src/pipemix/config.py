@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -18,12 +19,32 @@ def _default_path() -> Path:
     return Path.home() / ".config" / "pipemix" / "config.json"
 
 
-def default_log_dir() -> Path:
-    """Where `main.py` should put its rotating log file."""
+def _default_log_dir() -> Path:
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
         return Path(local_appdata) / "PipeMix" / "logs"
     return Path.home() / ".local" / "share" / "pipemix"
+
+
+def setup_logging(debug: bool) -> None:
+    """Rotating file in the per-user log dir, plus the console."""
+    log_dir = _default_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    to_file = RotatingFileHandler(log_dir / "pipemix.log", maxBytes=5_000_000, backupCount=3)
+    to_file.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)-7s] %(name)-25s %(message)s"
+    ))
+
+    to_console = logging.StreamHandler(sys.stdout)
+    to_console.setFormatter(logging.Formatter(
+        "[%(asctime)s] %(levelname)-5s: %(message)s", datefmt="%H:%M:%S"
+    ))
+
+    root = logging.getLogger()
+    root.addHandler(to_file)
+    root.addHandler(to_console)
+    root.setLevel(logging.DEBUG if debug else logging.INFO)
 
 
 class ConfigManager:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import ctypes
 import logging
 import queue
@@ -39,9 +40,10 @@ class _Leg:
         self.period = int(rate * period_ms / 1000)
         # Padding we aim for, in frames. Data arrives a source packet at a time:
         # leave room for it after the cushion.
-        self.target = max(int(rate * TARGET_MS / 1000),
-                          self.prime + max(self.period, int(rate * src_period_ms / 1000)))
+        self.target = min(frames, max(int(rate * TARGET_MS / 1000),
+                                      self.prime + max(self.period, int(rate * src_period_ms / 1000))))
         self.fifo   = bytearray()
+        self.adopted = 0.0  # monotonic time the pump adopted it
         self.high   = int(rate * DRIFT_MS / 1000) * bpf
         self.keep   = int(rate * DRIFT_KEEP_MS / 1000) * bpf
 
@@ -60,7 +62,7 @@ class _Leg:
                 self.render.ReleaseBuffer(silence, AUDCLNT_BUFFERFLAGS_SILENT)
                 log.debug("[leg %s] dry: primed %d frames", self.id, silence)
             padding = silence
-        n = min(min(self.frames, self.target) - padding, len(self.fifo) // self.bpf)
+        n = min(self.target - padding, len(self.fifo) // self.bpf)
         if n > 0:
             nbytes = n * self.bpf
             ctypes.memmove(self.render.GetBuffer(n), bytes(self.fifo[:nbytes]), nbytes)
@@ -123,10 +125,9 @@ class Engine:
         self._wanted: set[str] = set()
         self._legs: dict[str, _Leg] = {}
         self._retry_at: dict[str, float] = {}  # monotonic time a failed leg may be tried again
-        self._adopted_at: dict[str, float] = {}  # monotonic time each leg was last adopted
         self._opening: set[str] = set()        # legs handed to the opener, not back yet
         self._requests: queue.Queue = queue.Queue()  # device ids to open; None stops the opener
-        self._results: queue.Queue = queue.Queue()   # (device_id, _Leg or Exception)
+        self._results: collections.deque = collections.deque()  # (device_id, _Leg or Exception)
         self._opener: threading.Thread | None = None
         self._lock   = threading.Lock()
         self._stop   = threading.Event()
@@ -159,11 +160,15 @@ class Engine:
         self._stop.set()
         if not wait:
             return
-        if self._thread:
-            self._thread.join(timeout=5)  # covers the opener's join in _close
-            if self._thread.is_alive():
-                log.warning("Engine pump %s still running after 5 s, abandoning it", self._thread.name)
+        if not self.join(5):  # covers the opener's join in _close
+            log.warning("Engine pump %s still running after 5 s, abandoning it", self._thread.name)
         self._thread = None
+
+    def join(self, timeout: float) -> bool:
+        """Wait for the pump to exit. True once it has."""
+        if self._thread:
+            self._thread.join(timeout)
+        return not (self._thread and self._thread.is_alive())
 
     def set_legs(self, device_ids) -> None:
         """Replace the set of outputs. Only the difference is opened or closed."""
@@ -232,7 +237,7 @@ class Engine:
                     if not isinstance(result, Exception):
                         self._close_leg(result)  # the pump may be past its drain in _close
                     return
-                self._results.put((device_id, result))
+                self._results.append((device_id, result))
                 result = None  # don't keep a COM object or traceback alive until the next open
         finally:
             comtypes.CoUninitialize()
@@ -383,11 +388,8 @@ class Engine:
             wanted = set(self._wanted)
 
         now = time.monotonic()
-        while True:
-            try:
-                device_id, result = self._results.get_nowait()
-            except queue.Empty:
-                break
+        while self._results:
+            device_id, result = self._results.popleft()
             self._opening.discard(device_id)
             if isinstance(result, Exception):
                 # A dead endpoint must not take the others down or be retried every
@@ -395,9 +397,9 @@ class Engine:
                 (log.debug if device_id in self._retry_at else log.error)(
                     "Engine could not open leg %s: %s", device_id, result)
                 self._retry_at[device_id] = now + LEG_RETRY_S
-            elif device_id in wanted and device_id not in self._legs:
+            elif device_id in wanted:
                 self._legs[device_id] = result
-                self._adopted_at[device_id] = now
+                result.adopted = now
                 self._retry_at.pop(device_id, None)
             else:
                 self._close_leg(result)  # unwanted while it was opening
@@ -445,9 +447,10 @@ class Engine:
                 # drop the leg; it stays wanted, so reconcile reopens it at once, or
                 # after LEG_RETRY_S if it failed straight after its last reopen.
                 log.warning("Engine leg %s failed, reopening: %s", device_id, e)
-                self._close_leg(self._legs.pop(device_id))
+                leg = self._legs.pop(device_id)
+                self._close_leg(leg)
                 now = time.monotonic()
-                if now - self._adopted_at.get(device_id, -LEG_RETRY_S) < LEG_RETRY_S:
+                if now - leg.adopted < LEG_RETRY_S:
                     self._retry_at[device_id] = now + LEG_RETRY_S
 
     def _close(self) -> None:
@@ -458,15 +461,10 @@ class Engine:
             self._opener.join(timeout=OPENER_JOIN_S)
             if self._opener.is_alive():
                 log.warning("Engine opener still busy after %.1f s, abandoning it", OPENER_JOIN_S)
-            self._opener = None
-        while True:
-            try:
-                _device_id, result = self._results.get_nowait()
-            except queue.Empty:
-                break
+        while self._results:
+            _device_id, result = self._results.popleft()
             if not isinstance(result, Exception):
                 self._close_leg(result)
-        self._opening.clear()
         for leg in list(self._legs.values()):
             self._close_leg(leg)
         self._legs.clear()

@@ -58,7 +58,6 @@ class AudioDevice:
     sink:      str | None
     kind:      DeviceKind
     connected: bool       = False
-    battery:   int | None = None
     volume:    int        = 50
 
     def __eq__(self, other: object) -> bool:

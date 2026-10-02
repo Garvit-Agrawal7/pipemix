@@ -103,14 +103,14 @@ class Api:
         return self._devices_payload()
 
     @call
-    def set_device_volume(self, dev_id: str, volume: int, unmute: bool = False) -> int:
+    def set_device_volume(self, dev_id: str, volume: int) -> int:
         """Answers with the master level, which follows a lone output."""
-        self._controller.set_device_volume(dev_id, int(volume), bool(unmute))
+        self._controller.set_device_volume(dev_id, int(volume), True)
         return self._controller.master_volume
 
     @call
-    def set_master_volume(self, volume: int, unmute: bool = False) -> None:
-        self._controller.set_master_volume(int(volume), bool(unmute))
+    def set_master_volume(self, volume: int) -> None:
+        self._controller.set_master_volume(int(volume), True)
 
     # ---------- Sharing ----------
 
@@ -151,12 +151,8 @@ class Api:
         ]
 
     @call
-    def select_preset(self, preset_id: str | None) -> dict:
-        """Load a preset's device set, or clear back to a hand-made selection."""
-        if preset_id is None:
-            self._controller.config.last_preset = None
-            return {"devices": self._devices_payload(), "preset": None}
-
+    def select_preset(self, preset_id: str) -> dict:
+        """Load a preset's device set."""
         preset = self._controller.config.presets.get(preset_id)
         if not preset:
             raise BackendError(f"No preset named '{preset_id}'.")

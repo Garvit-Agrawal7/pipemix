@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,20 +15,10 @@ except ImportError:
     _gi_mock = MagicMock()
     _gi_mock._pipemix_stub = True
 
-    class _FakeGObject:
-        Object = type("Object", (), {
-            "__init__": lambda self, *a, **kw: None,
-            "emit": lambda self, *a, **kw: None,
-        })
-        SignalFlags = type("SignalFlags", (), {"RUN_FIRST": 0})()
-
-    class _FakeGLib:
-        @staticmethod
-        def timeout_add(*a, **kw):
-            pass
-
-    _gi_mock.repository.GObject = _FakeGObject
-    _gi_mock.repository.GLib = _FakeGLib
+    _gi_mock.repository.GObject.Object = type("Object", (), {
+        "__init__": lambda self, *a, **kw: None,
+        "emit": lambda self, *a, **kw: None,
+    })
     sys.modules["gi"] = _gi_mock
     sys.modules["gi.repository"] = _gi_mock.repository
 
@@ -37,8 +28,8 @@ from pipemix.linux.controller import Controller
 from pipemix.models import AudioDevice, BackendError, BackendHealth, BackendStatus, DeviceKind, VirtualSink
 
 
-def mkdev(mac: str, sink: str | None = None, kind=DeviceKind.BLUETOOTH, name: str = "Dev") -> AudioDevice:
-    return AudioDevice(id=mac, name=name, sink=sink, kind=kind, connected=sink is not None)
+def mkdev(mac: str, sink: str | None = None, kind=DeviceKind.BLUETOOTH) -> AudioDevice:
+    return AudioDevice(id=mac, name="Dev", sink=sink, kind=kind, connected=sink is not None)
 
 
 def _create(devices) -> VirtualSink:
@@ -94,8 +85,8 @@ def devs():
 HUB = "pipemix_test"
 
 
-def node(name: str, ns: int, **lat) -> dict:
-    p = {"direction": "Input", "minQuantum": 1.0, "minRate": 0, "minNs": ns, **lat}
+def node(name: str, ns: int) -> dict:
+    p = {"direction": "Input", "minQuantum": 1.0, "minRate": 0, "minNs": ns}
     return {"type": "PipeWire:Interface:Node",
             "info": {"props": {"node.name": name}, "params": {"Latency": [
                 p,
@@ -148,3 +139,82 @@ def sink_dev(sink: str) -> AudioDevice:
 @pytest.fixture
 def fake(monkeypatch) -> Fake:
     return Fake(monkeypatch, {"wired": 0, "bt": 200_000_000})
+
+
+# -- Windows fakes (test_windows_*) --
+
+def win_dev(dev_id: str, name: str = "Dev", connected: bool = True) -> AudioDevice:
+    """A Windows endpoint: id *is* sink, with no resolution step."""
+    return AudioDevice(id=dev_id, name=name, sink=dev_id if connected else None,
+                       kind=DeviceKind.BLUETOOTH, connected=connected)
+
+
+def win_backend(engine: str = "hub") -> MagicMock:
+    """A hub-mode controller backend: no leader, every device is a leg."""
+    b = MagicMock()
+    b.health.return_value = BackendStatus(BackendHealth.OK, "ok", engine=engine)
+    b.list_outputs.return_value = []
+    b.get_default.return_value = "prev_default"
+    b.restore_target.return_value = "prev_default"
+    b.get_volume.return_value = 50
+    b.leader = None
+    b.apps_gen = 7
+
+    def create(devices):
+        if not devices:
+            raise BackendError("No devices selected.")
+        return VirtualSink(MagicMock(), VirtualSink.make_name(), {d.id: 0 for d in devices})
+    b.create_sink.side_effect = create
+    return b
+
+
+class FakeEngine:
+    """Stands in for wasapi.engine.Engine: records legs, never touches COM. Class state is
+    reset per test. `start()` raises for pids in `fail_start_pids`; with `start_gate` set, the
+    first start blocks (up to `start_wait`) until it is set; `join_gate` makes `join` wait on it."""
+
+    instances: list[FakeEngine] = []
+    fail_start_pids: set[int] = set()
+    start_gate: threading.Event | None = None
+    start_wait = 1.0
+    entered = threading.Event()  # the first start() is running
+    join_gate: threading.Event | None = None
+
+    def __init__(self, source_id: str | None = None, *, pid: int | None = None) -> None:
+        self.source_id = source_id
+        self.pid = pid
+        self.started = False
+        self.stopped = False  # told to stop
+        self.joined = False   # join() saw the pump exit
+        self._legs: list[str] = []
+        FakeEngine.instances.append(self)
+
+    def start(self) -> None:
+        if self.pid in FakeEngine.fail_start_pids:
+            raise RuntimeError(f"could not activate process loopback for pid {self.pid}")
+        if FakeEngine.start_gate and not FakeEngine.entered.is_set():
+            FakeEngine.entered.set()
+            FakeEngine.start_gate.wait(FakeEngine.start_wait)
+        self.started = True
+
+    def stop(self, wait: bool = True) -> None:
+        self.stopped = True
+
+    def join(self, timeout: float) -> bool:
+        if self.stopped and (self.join_gate is None or self.join_gate.wait(timeout)):
+            self.joined = True
+        return self.joined
+
+    def set_legs(self, device_ids) -> None:
+        self._legs = list(device_ids)
+
+    @property
+    def legs(self) -> list[str]:
+        return sorted(self._legs)
+
+
+@pytest.fixture(autouse=True)
+def _reset_fake_engine():
+    FakeEngine.instances, FakeEngine.fail_start_pids = [], set()
+    FakeEngine.start_gate, FakeEngine.start_wait, FakeEngine.join_gate = None, 1.0, None
+    FakeEngine.entered = threading.Event()

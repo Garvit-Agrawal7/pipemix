@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { call } from "./api";
 import { useEmit } from "./fader";
 import Foot from "./Foot";
@@ -39,8 +39,6 @@ type Applied = { devices?: AudioDevice[]; presets?: Preset[]; preset: string | n
 
 function meta(d: AudioDevice, recon: boolean): string {
   if (recon) return "Dropped out · PipeMix will pull it back in";
-  if (d.kind === "bluetooth" && d.battery !== null)
-    return `Bluetooth · battery ${d.battery}%`;
   return `${KIND[d.kind]} · connected`;
 }
 
@@ -48,29 +46,16 @@ export default function Outputs(props: OutputsProps) {
   const { devices, state, health, master, sink, presets, preset } = props;
   const { onDevices, onPresets, onPreset, onMaster, onError } = props;
 
-  const [open, setOpen] = useState(false);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState("");
   const pop = useRef<HTMLDivElement>(null);
   const emit = useEmit();
 
-  // The popover opens and closes itself; this only mirrors that for aria-expanded.
-  useEffect(() => {
-    const el = pop.current!;
-    const sync = (e: Event) => {
-      const o = (e as ToggleEvent).newState === "open";
-      setOpen(o);
-      if (!o) setNaming(false);
-    };
-    el.addEventListener("toggle", sync);
-    return () => el.removeEventListener("toggle", sync);
-  }, []);
-
   const setDev = (d: AudioDevice, v: number) => {
     onDevices(devices.map((x) => (x.id === d.id ? { ...x, volume: v } : x)));
     // When it is the only output live, master is the same control, so take
     // back whatever the backend settled on rather than guessing here.
-    emit(() => void call<number>("set_device_volume", d.id, v, true).then(onMaster).catch(onError), d.id);
+    emit(() => void call<number>("set_device_volume", d.id, v).then(onMaster).catch(onError), d.id);
   };
 
   const toggle = (d: AudioDevice) => {
@@ -242,9 +227,7 @@ export default function Outputs(props: OutputsProps) {
 
       <Foot
         state={state}
-        live={live}
         disabled={!connected}
-        grey
         master={master}
         onMaster={onMaster}
         onError={onError}
@@ -252,7 +235,7 @@ export default function Outputs(props: OutputsProps) {
         <button
           className="btn sec"
           popovertarget="presets"
-          aria-expanded={open}
+          onClick={() => setNaming(false)}
           aria-haspopup="menu"
           aria-label={activePreset ? `Presets, ${activePreset.name} selected` : "Presets"}
         >

@@ -36,7 +36,6 @@ export default function Apps(props: AppsProps) {
   const [open, setOpen] = useState<number | null>(null);
 
   const { master, state, streams, onMaster, onStreams, onError } = props;
-  const sessionLive = state === "active";
   const anyConnected = props.devices.some((d) => d.connected);
 
   // Nothing picked means following the session.
@@ -188,9 +187,7 @@ export default function Apps(props: AppsProps) {
 
       <Foot
         state={state}
-        live={sessionLive}
         disabled={!anyConnected}
-        grey={false}
         master={master}
         onMaster={onMaster}
         onError={onError}

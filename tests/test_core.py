@@ -115,10 +115,14 @@ def test_leg_delays(fake) -> None:
     assert "bt" not in sink.legs
 
 
+def _pw_dump_fails(monkeypatch, err: str) -> None:
+    real = pactl_backend._run
+    monkeypatch.setattr(pactl_backend, "_run", lambda args: (1, "", err) if args == ["pw-dump"] else real(args))
+
+
 def test_leg_delays_pw_dump_fails(fake, monkeypatch) -> None:
     # no latency data means every leg gets the plain floor.
-    real = pactl_backend._run
-    monkeypatch.setattr(pactl_backend, "_run", lambda args: (1, "", "no pw-dump") if args == ["pw-dump"] else real(args))
+    _pw_dump_fails(monkeypatch, "no pw-dump")
 
     sink = VirtualSink(1, HUB)
     PactlBackend().set_legs(sink, [_dev("wired"), _dev("bt")])
@@ -145,8 +149,7 @@ def test_leg_delays_transient_failure(fake, monkeypatch) -> None:
     backend.set_legs(sink, [wired, bt])
     assert sink.delays == {"wired": 230, "bt": 230}
 
-    real = pactl_backend._run
-    monkeypatch.setattr(pactl_backend, "_run", lambda args: (1, "", "pw-dump timed out") if args == ["pw-dump"] else real(args))
+    _pw_dump_fails(monkeypatch, "pw-dump timed out")
     n_loads = len(fake.loads)
     backend.set_legs(sink, [wired, bt])
     assert len(fake.loads) == n_loads, "already-aligned legs must not reload on a transient failure"

@@ -6,7 +6,8 @@ import time
 
 import pytest
 
-gi = pytest.importorskip("gi")
+import gi
+
 if getattr(gi, "_pipemix_stub", False):  # conftest's stand-in has no real GObject signals
     pytest.skip("needs real PyGObject", allow_module_level=True)
 
@@ -98,12 +99,12 @@ def test_push_before_a_window_exists_is_dropped():
 
 
 def test_to_json_unwraps_dataclasses_and_enums():
-    device = AudioDevice(id="aa", name="Cans", sink=None, kind=DeviceKind.BLUETOOTH, battery=80)
+    device = AudioDevice(id="aa", name="Cans", sink=None, kind=DeviceKind.BLUETOOTH)
     assert to_json(device) == {
         "id": "aa", "name": "Cans", "sink": None, "kind": "bluetooth",
-        "connected": False, "battery": 80, "volume": 50,
+        "connected": False, "volume": 50,
     }
     assert to_json(SessionState.REPAIRING) == "repairing"
     assert to_json(BackendStatus(BackendHealth.DEGRADED, "hmm")) == {
-        "health": "degraded", "message": "hmm",
+        "health": "degraded", "message": "hmm", "engine": "native",
     }

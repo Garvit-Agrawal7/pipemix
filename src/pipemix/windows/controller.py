@@ -80,7 +80,6 @@ class Controller(SignalEmitter):
         # Hub-mode app poll: the thread, the events that stop and wake it, and
         # the last app list pushed to the page. Only this thread calls
         # backend.set_app_routes, so Engine.start/stop never runs under `_lock`.
-        self._app_poll: threading.Thread | None = None
         # Every poll not yet seen to exit, so quitting joins one a restart left behind.
         self._app_polls: list[threading.Thread] = []
         self._app_poll_stop: threading.Event | None = None
@@ -299,7 +298,7 @@ class Controller(SignalEmitter):
             log.info("Session active: %s", self.active_sink())
             if self.backend.health().engine == "hub":
                 self._start_app_poll()  # syncs once straight away
-        except Exception as e:
+        except Exception:
             self._set_state(SessionState.ERROR)
             self.stop_sharing()
             raise
@@ -443,10 +442,10 @@ class Controller(SignalEmitter):
     def _start_app_poll(self) -> None:
         self._app_poll_stop = stop = threading.Event()
         self._app_wake = wake = threading.Event()
-        self._app_poll = threading.Thread(
+        poll = threading.Thread(
             target=self._poll_apps, args=(stop, wake), name="pipemix-app-poll", daemon=True)
-        self._app_poll.start()
-        self._app_polls = [p for p in self._app_polls if p.is_alive()] + [self._app_poll]
+        poll.start()
+        self._app_polls = [p for p in self._app_polls if p.is_alive()] + [poll]
 
     def _poll_apps(self, stop: threading.Event, wake: threading.Event) -> None:
         while not stop.is_set():

@@ -4,46 +4,23 @@ import argparse
 import logging
 import signal
 import sys
-from logging.handlers import RotatingFileHandler
 
 from gi.repository import GLib
 
 from pipemix.linux.app import run_gui
 from pipemix.linux.controller import Controller
 from pipemix.linux.pactl_backend import PactlBackend
-from pipemix.config import ConfigManager, default_log_dir
+from pipemix.config import ConfigManager, setup_logging
 
 log = logging.getLogger("pipemix.main")
-
-
-def setup_logging(debug: bool) -> None:
-    """Rotating file in ~/.local/share/pipemix, plus the console."""
-    log_dir = default_log_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    to_file = RotatingFileHandler(log_dir / "pipemix.log", maxBytes=5_000_000, backupCount=3)
-    to_file.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)-7s] %(name)-25s %(message)s"
-    ))
-
-    to_console = logging.StreamHandler(sys.stdout)
-    to_console.setFormatter(logging.Formatter(
-        "[%(asctime)s] %(levelname)-5s: %(message)s", datefmt="%H:%M:%S"
-    ))
-
-    root = logging.getLogger()
-    root.addHandler(to_file)
-    root.addHandler(to_console)
-    root.setLevel(logging.DEBUG if debug else logging.INFO)
 
 
 def _print_devices(ctrl: Controller) -> None:
     print("\n  Available Outputs:")
     for d in ctrl.devices.values():
-        battery = f" (Battery: {d.battery}%)" if d.battery is not None else ""
         status = "Connected" if d.connected else "Disconnected"
         print(f"    [{'✓' if d.connected else ' '}] [{d.kind.value:9}] "
-              f"{d.name:<30} ID: {d.id:<36} {status}{battery}")
+              f"{d.name:<30} ID: {d.id:<36} {status}")
 
 
 def print_status(ctrl: Controller) -> None:

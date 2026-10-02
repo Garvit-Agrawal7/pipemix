@@ -5,34 +5,12 @@ import logging
 import signal
 import sys
 import threading
-from logging.handlers import RotatingFileHandler
 
 from pipemix.windows.backend import WasapiBackend
 from pipemix.windows.controller import Controller
-from pipemix.config import ConfigManager, default_log_dir
+from pipemix.config import ConfigManager, setup_logging
 
 log = logging.getLogger("pipemix.main")
-
-
-def setup_logging(debug: bool) -> None:
-    """Rotating file in %LOCALAPPDATA%\\PipeMix\\logs, plus the console."""
-    log_dir = default_log_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    to_file = RotatingFileHandler(log_dir / "pipemix.log", maxBytes=5_000_000, backupCount=3)
-    to_file.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)-7s] %(name)-25s %(message)s"
-    ))
-
-    to_console = logging.StreamHandler(sys.stdout)
-    to_console.setFormatter(logging.Formatter(
-        "[%(asctime)s] %(levelname)-5s: %(message)s", datefmt="%H:%M:%S"
-    ))
-
-    root = logging.getLogger()
-    root.addHandler(to_file)
-    root.addHandler(to_console)
-    root.setLevel(logging.DEBUG if debug else logging.INFO)
 
 
 def print_status(ctrl: Controller) -> None:

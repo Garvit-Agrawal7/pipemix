@@ -19,7 +19,6 @@ export interface AudioDevice {
   sink: string | null; // null while known but disconnected
   kind: DeviceKind;
   connected: boolean;
-  battery: number | null;
   volume: number;
   // Added by Api.devices_payload, not on the dataclass.
   selected: boolean;

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 from pipemix.config import ConfigManager
 from pipemix.windows.controller import Controller
-from test_windows_controller import _backend, _dev
+from conftest import win_backend as _backend, win_dev as _dev
 
 
 def _ctrl(tmp_path: Path, backend=None, config: ConfigManager | None = None) -> Controller:

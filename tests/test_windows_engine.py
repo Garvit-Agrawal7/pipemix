@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 import types
+from unittest.mock import MagicMock, Mock
 
 import comtypes
 import pytest
@@ -46,7 +47,7 @@ class _NoCapture:
 
 class _FakeLeg:
     def __init__(self, device_id, fail=False):
-        self.id, self.fail, self.writes = device_id, fail, 0
+        self.id, self.fail, self.writes, self.adopted = device_id, fail, 0, 0.0
         self.client = self
 
     def write(self):
@@ -65,6 +66,15 @@ def _patch_com(monkeypatch, avrt=None):
         monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(avrt=avrt), raising=False)
     monkeypatch.setattr(comtypes, "CoInitializeEx", lambda *a: None)
     monkeypatch.setattr(comtypes, "CoUninitialize", lambda: None)
+
+
+def _stub_engine(monkeypatch, *names, avrt=None):
+    """An Engine whose pump-thread internals named in `names` do nothing, on stubbed COM."""
+    _patch_com(monkeypatch, avrt or _Avrt())
+    e = Engine("src")
+    for name in names:
+        monkeypatch.setattr(e, name, lambda: None)
+    return e
 
 
 @pytest.fixture
@@ -96,7 +106,7 @@ def _settle(e, timeout=2.0):
     """Reconcile, wait for the opener to hand back every open, reconcile again to adopt them."""
     e._reconcile()
     deadline = time.perf_counter() + timeout  # monotonic is patched in some tests
-    while e._results.qsize() < len(e._opening):
+    while len(e._results) < len(e._opening):
         assert time.perf_counter() < deadline, "opener never answered"
         time.sleep(0.001)
     e._reconcile()
@@ -172,7 +182,7 @@ def test_leg_that_fails_to_open_is_retried_once_a_second(monkeypatch, opener, cl
 def test_retry_is_forgotten_when_the_leg_is_no_longer_wanted(monkeypatch, opener):
     e = opener(Engine("src"))
     e.set_legs(["gone"])
-    monkeypatch.setattr(e, "_open_leg", lambda d: (_ for _ in ()).throw(OSError("nope")))
+    monkeypatch.setattr(e, "_open_leg", Mock(side_effect=OSError("nope")))
     _settle(e)
     assert "gone" in e._retry_at
     e.set_legs([])
@@ -183,8 +193,8 @@ def test_retry_is_forgotten_when_the_leg_is_no_longer_wanted(monkeypatch, opener
 def test_failed_open_logs_error_once_then_debug(monkeypatch, opener, clock, caplog):
     e = opener(Engine("src"))
     e.set_legs(["busy"])
-    attempts = []
-    monkeypatch.setattr(e, "_open_leg", lambda d: attempts.append(d) or (_ for _ in ()).throw(OSError("in use")))
+    open_leg = Mock(side_effect=OSError("in use"))
+    monkeypatch.setattr(e, "_open_leg", open_leg)
 
     with caplog.at_level(logging.DEBUG, logger=engine_mod.log.name):
         _settle(e)
@@ -192,7 +202,7 @@ def test_failed_open_logs_error_once_then_debug(monkeypatch, opener, clock, capl
         _settle(e)                     # too soon
         clock[0] += 0.02
         _settle(e)                     # retried, still failing
-    assert attempts == ["busy", "busy"]
+    assert open_leg.call_count == 2
     levels = [r.levelno for r in caplog.records if "could not open leg" in r.message]
     assert levels == [logging.ERROR, logging.DEBUG]
     assert "busy" not in e._legs and "busy" in e._retry_at
@@ -238,7 +248,6 @@ def test_slow_open_does_not_stall_the_pump(monkeypatch, opener):
         e._reconcile()
         e._pump()
         worst = max(worst, time.perf_counter() - t)
-    print(f"worst reconcile+pump tick while a leg opens: {worst * 1000:.3f} ms")
     assert worst < 0.020
     assert alive.writes == 50
     assert "slow" not in e._legs
@@ -281,10 +290,7 @@ def test_leg_unwanted_by_the_time_it_opens_is_closed(monkeypatch, opener):
 
 
 def test_stop_joins_the_opener_and_closes_an_unadopted_leg(monkeypatch):
-    _patch_com(monkeypatch, _Avrt())
-    e = Engine("src")
-    monkeypatch.setattr(e, "_open_source", lambda: None)
-    monkeypatch.setattr(e, "_pump", lambda: None)
+    e = _stub_engine(monkeypatch, "_open_source", "_pump")
     slow = _SlowOpen()
     monkeypatch.setattr(e, "_open_leg", slow)
     closed = _closes(monkeypatch, e)
@@ -447,29 +453,19 @@ def test_empty_fifo_write_skips_the_padding_call():
 
 
 def test_open_leg_sizes_target_to_the_source_period(monkeypatch):
-    class Client:
-        def __init__(self, period):
-            self.period = period
-        def GetDevicePeriod(self):
-            return (self.period, self.period)
-        def Initialize(self, *a):
-            pass
-        def GetService(self, iid):
-            return self
-        def QueryInterface(self, iface):
-            return self
-        def Start(self):
-            pass
-        def GetBufferSize(self):
-            return 9600
-        def Activate(self, *a):
-            return self
+    def client(period):
+        c = MagicMock()
+        c.GetDevicePeriod.return_value = (period, period)
+        c.GetBufferSize.return_value = 9600
+        for m in ("Activate", "GetService", "QueryInterface"):
+            getattr(c, m).return_value = c
+        return c
 
     e = Engine("src")
-    e._fmt = type("P", (), {"contents": type("F", (), {"nBlockAlign": 4, "nSamplesPerSec": 48000})()})()
-    e._client = Client(200_000)                 # 20 ms source packets
+    e._fmt = types.SimpleNamespace(contents=types.SimpleNamespace(nBlockAlign=4, nSamplesPerSec=48000))
+    e._client = client(200_000)                 # 20 ms source packets
     e._start_capture(0)
-    monkeypatch.setattr(e, "_device", lambda d: Client(100_000))  # 10 ms leg
+    monkeypatch.setattr(e, "_device", lambda d: client(100_000))  # 10 ms leg
     assert e._open_leg("d").target == 1680
 
 
@@ -489,7 +485,7 @@ def test_late_leg_after_stop_is_closed_not_queued(monkeypatch, opener):
     opener_thread.join(2)
     assert not opener_thread.is_alive()
     assert [leg.id for leg in closed] == ["slow"]
-    assert e._results.empty() and e.legs == []
+    assert not e._results and e.legs == []
 
 
 # -- MMCSS on the pump thread ---------------------------------------------
@@ -511,10 +507,7 @@ class _Avrt:
 
 
 def _run_engine(monkeypatch, avrt):
-    _patch_com(monkeypatch, avrt)
-    e = Engine("src")
-    for name in ("_open_source", "_reconcile", "_pump"):
-        monkeypatch.setattr(e, name, lambda: None)
+    e = _stub_engine(monkeypatch, "_open_source", "_reconcile", "_pump", avrt=avrt)
     e.start()
     assert e._ready.is_set() and e.error is None
     e.stop()
@@ -535,10 +528,7 @@ def test_mmcss_failure_does_not_stop_the_engine(monkeypatch, avrt):
 # -- stop(wait=False) only signals; the pump closes itself -----------------
 
 def test_stop_without_wait_returns_at_once_and_the_pump_closes_itself(monkeypatch):
-    _patch_com(monkeypatch, _Avrt())
-    e = Engine("src")
-    for name in ("_open_source", "_reconcile", "_pump"):
-        monkeypatch.setattr(e, name, lambda: None)
+    e = _stub_engine(monkeypatch, "_open_source", "_reconcile", "_pump")
     closing, release, closed_on = threading.Event(), threading.Event(), []
 
     def slow_close():

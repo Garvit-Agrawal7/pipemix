@@ -71,7 +71,7 @@ def monitor_with_log(monkeypatch):
     sys.modules.pop(NOTIFY, None)
 
 
-def test_registration_happens_off_the_calling_thread(monitor_with_log):
+def test_registers_and_unregisters_off_the_calling_thread_in_one_apartment(monitor_with_log):
     monitor, log = monitor_with_log
     caller = threading.current_thread().name
 
@@ -80,6 +80,7 @@ def test_registration_happens_off_the_calling_thread(monitor_with_log):
 
     registered_on = [entry[1] for entry in log if entry[0] == "register"]
     coinit_on = [entry[1] for entry in log if entry[0] == "coinit"]
+    unregistered_on = [entry[1] for entry in log if entry[0] == "unregister"]
 
     assert registered_on, f"never registered; log={log}"
     assert caller not in registered_on, (
@@ -90,16 +91,6 @@ def test_registration_happens_off_the_calling_thread(monitor_with_log):
     assert coinit_on[0] == registered_on[0], (
         "the thread that registered is not the one that entered the apartment"
     )
+    # COM requires it, and getting this wrong leaks the callback for the life of the process.
+    assert unregistered_on == registered_on, f"unregistered on another thread; log={log}"
 
-
-def test_unregisters_on_the_same_thread_it_registered_on(monitor_with_log):
-    # COM requires it, and getting this wrong leaks the callback for the life
-    # of the process.
-    monitor, log = monitor_with_log
-    monitor.start()
-    monitor.stop()
-
-    registered_on = [entry[1] for entry in log if entry[0] == "register"]
-    unregistered_on = [entry[1] for entry in log if entry[0] == "unregister"]
-    assert unregistered_on, f"never unregistered; log={log}"
-    assert unregistered_on == registered_on

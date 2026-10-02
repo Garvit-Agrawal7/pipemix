@@ -37,14 +37,12 @@ class WasapiBackend:
         self._status: BackendStatus | None = None
         self._apps: dict[int, Engine] = {}
         self._failed_apps: set[int] = set()
-        # pid -> device ids last handed to that app's engine (engine.legs lags while opening).
-        self._app_legs: dict[int, frozenset[str]] = {}
-        # Bumped by create_sink/destroy_sink: routes computed for an older session are dropped.
+        # Bumped by destroy_sink: routes computed for an older session are dropped.
         self.apps_gen = 0
         # Guards short mutations of the per-app state above; never held across Engine.start/stop.
         self._apps_lock = threading.Lock()
-        # Threads joining stopped engines; `close` waits for them on exit.
-        self._reapers: list[threading.Thread] = []
+        # Engines told to stop; `close` waits for their pumps to exit.
+        self._stopped: list[Engine] = []
         self._hub: str | None = None  # the session endpoint (cable_in, or the leader)
         self._routed: set[int] = set()  # pids pinned to _hub, unpinned in destroy_sink
 
@@ -198,9 +196,7 @@ class WasapiBackend:
             # a STARTING session that a stop or re-election can cancel, like apps_gen does for apps.
             engine.start()
 
-        with self._apps_lock:
-            self.apps_gen += 1
-            self._hub = hub_id
+        self._hub = hub_id
 
         # `name` is the endpoint everything plays into, because the
         # Controller passes it to set_default/set_volume.
@@ -231,34 +227,25 @@ class WasapiBackend:
         sink.legs = {d.id: 0 for d in wanted}
         log.info("%s now feeds %s", sink.name, sorted(sink.legs))
 
-    def set_app_routes(self, routes: dict[int, list[str]], gen: int | None = None) -> None:
-        """Reconcile per-app engines with `routes` (pid -> device ids), once per poll:
-        one `Engine(pid=...)` per pid, stopped when it drops out, `set_legs` when its
-        devices change. `gen` is the `apps_gen` the routes were computed under; stale
-        routes (session stopped or restarted since) are ignored. Hub sessions only.
-        Never raises, never holds _apps_lock across Engine.start, so destroy_sink
-        never waits on an in-flight start, and never waits for an engine to finish
-        stopping. Dropped engines are told to stop before any new one starts. A pid
-        that fails to start is skipped until it leaves `routes` and returns.
-        No lock spans a call: each session has one poll thread (its gen), so live calls
-        are already serial, and every mutation re-checks `gen` under _apps_lock, so a
-        stale call still inside Engine.start never blocks the next session's poll and
-        never touches its state; whatever it started late is just stopped."""
+    def set_app_routes(self, routes: dict[int, list[str]], gen: int) -> None:
+        """Reconcile per-app engines with `routes` (pid -> device ids), once per poll;
+        a pid that fails to start is skipped until it leaves `routes` and returns.
+
+        `gen` is the `apps_gen` the routes were computed under: routes from an older
+        session are ignored. _apps_lock is never held across Engine.start, so
+        destroy_sink never waits on a start; a stale call stops what it started."""
         with self._apps_lock:
-            gen = self.apps_gen if gen is None else gen
-            if gen != self.apps_gen or self._hub is None or self.leader is not None:
+            if gen != self.apps_gen:
                 return
             dead = [self._apps.pop(pid) for pid in list(self._apps) if pid not in routes]
             self._failed_apps &= set(routes)  # forget a failure once its pid leaves routes
-            self._app_legs = {p: ids for p, ids in self._app_legs.items() if p in self._apps}
             for pid, engine in self._apps.items():
-                self._send_legs(pid, engine, routes[pid])
+                engine.set_legs(routes[pid])
             new = [p for p in routes if p not in self._apps and p not in self._failed_apps]
 
         self._stop_engines(dead)  # before any start: a slow start must not keep these playing
-        late: list[Engine] = []
+        stale = None
         for pid in new:
-            engine = None
             try:
                 engine = Engine(pid=pid)
                 engine.start()
@@ -271,68 +258,38 @@ class WasapiBackend:
                 continue
             with self._apps_lock:
                 if gen != self.apps_gen:  # the session ended while this one started
-                    late.append(engine)
+                    stale = engine
                     break
                 self._apps[pid] = engine
-                self._send_legs(pid, engine, routes[pid])
+                engine.set_legs(routes[pid])
 
-        self._stop_engines(late)
+        if stale:
+            self._stop_engines([stale])
 
     def _stop_engines(self, engines: list[Engine]) -> None:
-        """Signal every engine to stop (each goes quiet within one pump tick, together),
-        then join them on a reaper thread, so no caller waits. Never raises. Call with
-        no _apps_lock held."""
-        if not engines:
-            return
+        """Signal every engine to stop (each goes quiet within one pump tick, together);
+        `close` waits for the pumps. Never waits itself."""
         for engine in engines:
-            try:
-                engine.stop(wait=False)
-            except Exception:
-                log.exception("Failed to stop engine %s", engine.source_id or f"pid {engine.pid}")
-        names = ", ".join(e.source_id or f"pid {e.pid}" for e in engines)
-        reaper = threading.Thread(
-            target=self._reap, args=(engines,), name=f"pipemix-engine-reaper ({names})", daemon=True)
-        with self._apps_lock:  # started under the lock, so `close` never misses it
-            reaper.start()
-            self._reapers = [r for r in self._reapers if r.is_alive()] + [reaper]
-
-    @staticmethod
-    def _reap(engines: list[Engine]) -> None:
-        for engine in engines:
-            try:
-                engine.stop()  # joins; Engine.stop warns if the pump outlives the join
-            except Exception:
-                log.exception("Failed to stop engine %s", engine.source_id or f"pid {engine.pid}")
+            engine.stop(wait=False)
+        with self._apps_lock:
+            self._stopped = [e for e in self._stopped if not e.join(0)] + engines
 
     def close(self, timeout: float = 3.0) -> None:
         """On exit: wait up to `timeout` in total for stopped engines to close their
-        streams, including ones handed to a reaper while this waits."""
+        streams, including ones stopped while this waits."""
         deadline = time.monotonic() + timeout
         while True:
             with self._apps_lock:
-                live = [r for r in self._reapers if r.is_alive()]
-            if not live:
+                self._stopped = [e for e in self._stopped if not e.join(0)]
+                engine = self._stopped[0] if self._stopped else None
+            if engine is None:
                 return
-            if time.monotonic() >= deadline:
+            if not engine.join(max(0.0, deadline - time.monotonic())):
                 # ponytail: a driver call that never returns is abandoned here, and the daemon
-                # reaper dies at interpreter exit mid-close; a process-exit hook or longer budget if that bites.
+                # pump dies at interpreter exit mid-close; a process-exit hook or longer budget if that bites.
                 log.warning("Quit: abandoning %s, still closing after %.1f s",
-                            ", ".join(r.name for r in live), timeout)
+                            engine.source_id or f"pid {engine.pid}", timeout)
                 return
-            for reaper in live:
-                reaper.join(max(0.0, deadline - time.monotonic()))
-
-    def _send_legs(self, pid: int, engine: Engine, ids: list[str]) -> None:
-        """set_legs only when the ids differ from the last ones sent. Call under _apps_lock."""
-        wanted = frozenset(ids)
-        if self._app_legs.get(pid) == wanted:
-            return
-        try:
-            engine.set_legs(ids)
-        except Exception:
-            log.exception("Failed to set legs for app pid %d", pid)
-            return
-        self._app_legs[pid] = wanted
 
     def destroy_sink(self, sink: VirtualSink) -> None:
         """Safe to call when the sink is already gone — never raises."""
@@ -347,7 +304,6 @@ class WasapiBackend:
             self._hub = None
             apps, self._apps = self._apps, {}
             self._failed_apps.clear()
-            self._app_legs.clear()
         self._stop_engines(([engine] if engine is not None else []) + list(apps.values()))
 
         # The controller's pinned_apps sweep only reaches apps whose exe it knows.

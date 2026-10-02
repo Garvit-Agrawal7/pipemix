@@ -130,7 +130,7 @@ button{font:inherit;color:inherit;background:none;border:none;padding:0;margin:0
 .st.mlabel{letter-spacing:.17em}
 .lvnum.big{font-size:20px;width:34px}
 .empty svg{opacity:.5}
-.btn.sec[aria-expanded="true"] svg{transform:rotate(180deg)}
+.foot:has(.pop:popover-open) .btn.sec svg{transform:rotate(180deg)}
 .btn.sec svg{transition:transform 120ms ease}
 .btn.pri:disabled{opacity:.5}
 
