@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -11,6 +15,15 @@ from pipemix.linux.services.backend import BackendError, BackendHealth, BackendS
 from pipemix.linux.services.config.config_manager import ConfigManager
 from pipemix.windows import controller as controller_module
 from pipemix.windows.controller import Controller
+
+_REAL_POLL = Controller._poll_apps
+
+
+@pytest.fixture(autouse=True)
+def _no_poll(monkeypatch):
+    """The poll thread exits at once, so tests drive `_sync_apps` themselves.
+    Tests about the poll itself put `_REAL_POLL` back."""
+    monkeypatch.setattr(Controller, "_poll_apps", lambda self, stop, wake: None)
 
 
 def _dev(dev_id: str, name: str = "Dev", connected: bool = True) -> AudioDevice:
@@ -35,6 +48,7 @@ def _backend(engine: str = "hub") -> MagicMock:
     b.restore_target.return_value = "prev_default"
     b.get_volume.return_value = 50
     b.leader = None
+    b.apps_gen = 7
     b.create_sink.side_effect = _fake_create
     return b
 
@@ -637,11 +651,16 @@ def test_on_disconnect_drops_device_from_override_lists(tmp_path: Path, monkeypa
     ctrl.overrides[43] = [d1.id]
     b.set_app_routes.reset_mock()
 
+    ctrl._app_wake.clear()
+
     ctrl._on_disconnect(d1.id)
 
     assert ctrl.overrides[42] == [d2.id]
     assert 43 not in ctrl.overrides                      # emptied out entirely
-    b.set_app_routes.assert_called()                     # re-synced after the drop
+    b.set_app_routes.assert_not_called()                 # never under the lock...
+    assert ctrl._app_wake.is_set()                       # ...the poll re-syncs instead
+    ctrl._sync_apps()
+    b.set_app_routes.assert_called()
 
 
 def test_retarget_resyncs_apps(tmp_path: Path, monkeypatch) -> None:
@@ -652,26 +671,103 @@ def test_retarget_resyncs_apps(tmp_path: Path, monkeypatch) -> None:
     ctrl.devices = {d.id: d for d in (d1, d2)}
     ctrl.start_sharing([d1])
     b.set_app_routes.reset_mock()
+    ctrl._app_wake.clear()
 
     ctrl.start_sharing([d1, d2])                         # session already up -> _retarget
 
+    b.set_app_routes.assert_not_called()
+    assert ctrl._app_wake.is_set()
+    ctrl._sync_apps()
     b.set_app_routes.assert_called()
+    assert b.set_app_routes.call_args[1] == {"gen": 7}
 
 
 def test_start_sharing_hub_starts_the_poll_thread(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(controller_module, "APP_POLL_S", 999)
+    monkeypatch.setattr(Controller, "_poll_apps", _REAL_POLL)
     b = _backend(engine="hub")
+    synced = threading.Event()
+    b.set_app_routes.side_effect = lambda *a, **k: synced.set()
     ctrl = _ctrl(tmp_path, backend=b)
     d1 = _dev("EP1")
     ctrl.devices = {d1.id: d1}
+    b.list_streams.return_value = []
 
     ctrl.start_sharing([d1])
 
     assert ctrl._app_poll is not None and ctrl._app_poll.is_alive()
+    assert synced.wait(1)                                # first sync is immediate
 
     ctrl.stop_sharing()
 
     assert ctrl._app_poll_stop is not None and ctrl._app_poll_stop.is_set()
+    ctrl._app_poll.join(1)
+    assert not ctrl._app_poll.is_alive()                 # woken, not left in a 999 s wait
+
+
+def _blocking_hub(tmp_path: Path, monkeypatch):
+    """A hub session whose real poll thread is stuck inside set_app_routes
+    (a slow Engine.start) until the test sets `release`."""
+    monkeypatch.setattr(controller_module, "APP_POLL_S", 999)
+    monkeypatch.setattr(Controller, "_poll_apps", _REAL_POLL)
+    b = _backend(engine="hub")
+    entered, release = threading.Event(), threading.Event()
+
+    def _slow(*_a, **_k):
+        entered.set()
+        release.wait(2)
+    b.set_app_routes.side_effect = _slow
+    b.list_streams.return_value = []
+    ctrl = _ctrl(tmp_path, backend=b)
+    d1, d2 = _dev("EP1"), _dev("EP2")
+    ctrl.devices = {d.id: d for d in (d1, d2)}
+    ctrl.start_sharing([d1, d2])
+    assert entered.wait(1)
+    return ctrl, b, release
+
+
+def test_locked_methods_dont_wait_for_an_in_flight_app_sync(tmp_path: Path, monkeypatch) -> None:
+    ctrl, b, release = _blocking_hub(tmp_path, monkeypatch)
+    try:
+        t0 = time.monotonic()
+        ctrl.route_stream(42, ["EP1"])                   # @locked
+        ctrl._on_disconnect("EP2")                       # @locked
+        assert time.monotonic() - t0 < 0.5
+        assert ctrl.overrides[42] == ["EP1"]
+    finally:
+        release.set()
+        ctrl.stop_sharing()
+        ctrl._app_poll.join(1)
+
+
+def test_stop_sharing_during_an_in_flight_sync_stops_the_poll(tmp_path: Path, monkeypatch) -> None:
+    ctrl, b, release = _blocking_hub(tmp_path, monkeypatch)
+    poll = ctrl._app_poll
+
+    t0 = time.monotonic()
+    ctrl.stop_sharing()                                  # must not join/wait on the poll
+    assert time.monotonic() - t0 < 0.5
+    b.destroy_sink.assert_called_once()
+
+    release.set()
+    poll.join(1)
+    assert not poll.is_alive()
+    assert ctrl.session.state == SessionState.IDLE
+
+
+def test_hub_route_stream_wakes_the_poll_instead_of_syncing(tmp_path: Path, monkeypatch) -> None:
+    b = _backend(engine="hub")
+    ctrl = _ctrl(tmp_path, backend=b)
+    d1 = _dev("EP1")
+    ctrl.devices = {d1.id: d1}
+    ctrl.start_sharing([d1])
+    ctrl._app_wake.clear()
+    b.set_app_routes.reset_mock()
+
+    ctrl.route_stream(42, [d1.id])
+
+    b.set_app_routes.assert_not_called()
+    assert ctrl._app_wake.is_set()
 
 
 def test_sync_apps_noop_after_stop_sharing(tmp_path: Path, monkeypatch) -> None:

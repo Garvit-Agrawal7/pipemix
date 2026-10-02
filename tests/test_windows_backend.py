@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType
 
@@ -381,8 +382,15 @@ def test_leader_mode_still_starts_exactly_one_engine(monkeypatch):
 # -- set_app_routes: one Engine(pid=...) per app actively playing into the
 # hub, reconciled against whatever routes the Controller asks for this poll --
 
-def test_set_app_routes_starts_one_engine_per_new_pid(monkeypatch):
+def _hub_session(monkeypatch) -> WasapiBackend:
+    """A backend with a hub session open, as set_app_routes needs."""
     b = _backend(monkeypatch, hub=True, default="original")
+    b.create_sink([_dev("dev_a")])
+    return b
+
+
+def test_set_app_routes_starts_one_engine_per_new_pid(monkeypatch):
+    b = _hub_session(monkeypatch)
     b.set_app_routes({1: ["dev_a", "dev_b"]})
     assert len(_FakeEngine.instances) == 1
     engine = _FakeEngine.instances[0]
@@ -392,7 +400,7 @@ def test_set_app_routes_starts_one_engine_per_new_pid(monkeypatch):
 
 
 def test_set_app_routes_same_routes_again_creates_nothing_new(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
+    b = _hub_session(monkeypatch)
     b.set_app_routes({1: ["dev_a"]})
     assert len(_FakeEngine.instances) == 1
 
@@ -402,7 +410,7 @@ def test_set_app_routes_same_routes_again_creates_nothing_new(monkeypatch):
 
 
 def test_set_app_routes_changed_ids_calls_set_legs_on_the_same_engine(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
+    b = _hub_session(monkeypatch)
     b.set_app_routes({1: ["dev_a"]})
     engine = _FakeEngine.instances[0]
 
@@ -413,7 +421,7 @@ def test_set_app_routes_changed_ids_calls_set_legs_on_the_same_engine(monkeypatc
 
 
 def test_set_app_routes_ignores_leg_order_when_comparing_ids(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
+    b = _hub_session(monkeypatch)
     b.set_app_routes({1: ["dev_a", "dev_b"]})
     engine = _FakeEngine.instances[0]
     engine.set_legs = lambda ids: (_ for _ in ()).throw(
@@ -424,7 +432,7 @@ def test_set_app_routes_ignores_leg_order_when_comparing_ids(monkeypatch):
 
 
 def test_set_app_routes_dropped_pid_stops_its_engine(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
+    b = _hub_session(monkeypatch)
     b.set_app_routes({1: ["dev_a"], 2: ["dev_b"]})
     engine1, engine2 = _FakeEngine.instances
 
@@ -439,7 +447,7 @@ def test_set_app_routes_dropped_pid_stops_its_engine(monkeypatch):
 
 
 def test_set_app_routes_unchanged_pid_touches_nothing(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
+    b = _hub_session(monkeypatch)
     b.set_app_routes({1: ["dev_a"]})
     engine = _FakeEngine.instances[0]
     engine.set_legs = lambda ids: (_ for _ in ()).throw(
@@ -450,7 +458,7 @@ def test_set_app_routes_unchanged_pid_touches_nothing(monkeypatch):
 
 
 def test_set_app_routes_a_failing_pid_is_logged_and_others_still_start(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
+    b = _hub_session(monkeypatch)
     _FakeEngine.fail_start_pids = {1}
 
     b.set_app_routes({1: ["dev_a"], 2: ["dev_b"]})  # must not raise
@@ -460,7 +468,7 @@ def test_set_app_routes_a_failing_pid_is_logged_and_others_still_start(monkeypat
 
 
 def test_set_app_routes_a_failed_pid_is_not_retried_while_still_requested(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
+    b = _hub_session(monkeypatch)
     _FakeEngine.fail_start_pids = {1}
     b.set_app_routes({1: ["dev_a"]})
     assert len(_FakeEngine.instances) == 1  # one attempt
@@ -509,3 +517,122 @@ def test_set_legs_on_a_hub_sink_with_no_engine_module_works(monkeypatch):
     b.set_legs(sink, [_dev("dev_a"), _dev("dev_b")])  # must not raise
 
     assert sink.legs == {"dev_a": 0, "dev_b": 0}
+
+
+# -- set_app_routes never holds a lock across Engine.start/stop --
+
+class _SlowEngine(_FakeEngine):
+    """start() blocks until `release` is set; stop() records whether the
+    backend's lock was free at the time."""
+    entered = threading.Event()
+    release = threading.Event()
+    backend: WasapiBackend | None = None
+    stop_saw_lock_free: list[bool] = []
+
+    def start(self) -> None:
+        _SlowEngine.entered.set()
+        _SlowEngine.release.wait(1)
+        super().start()
+
+    def stop(self) -> None:
+        lock = _SlowEngine.backend._apps_lock
+        free = lock.acquire(blocking=False)
+        if free:
+            lock.release()
+        _SlowEngine.stop_saw_lock_free.append(free)
+        super().stop()
+
+
+def _slow_session(monkeypatch) -> WasapiBackend:
+    b = _hub_session(monkeypatch)
+    monkeypatch.setattr(backend_mod, "Engine", _SlowEngine)
+    _SlowEngine.entered = threading.Event()
+    _SlowEngine.release = threading.Event()
+    _SlowEngine.backend = b
+    _SlowEngine.stop_saw_lock_free = []
+    return b
+
+
+def test_destroy_sink_does_not_wait_for_an_in_flight_start(monkeypatch):
+    b = _slow_session(monkeypatch)
+    sink = VirtualSink(None, "cable_in")
+    t = threading.Thread(target=b.set_app_routes, args=({1: ["dev_a"]},))
+    t.start()
+    assert _SlowEngine.entered.wait(1)
+
+    done = threading.Event()
+    threading.Thread(target=lambda: (b.destroy_sink(sink), done.set())).start()
+    assert done.wait(0.5)                    # returned while start() is still blocked
+
+    _SlowEngine.release.set()
+    t.join(1)
+    engine = _FakeEngine.instances[-1]
+    assert engine.started and engine.stopped  # the late engine was not adopted
+    assert b._apps == {}
+
+
+def test_set_app_routes_after_destroy_sink_builds_nothing(monkeypatch):
+    b = _hub_session(monkeypatch)
+    gen = b.apps_gen
+    b.destroy_sink(VirtualSink(None, "cable_in"))
+
+    b.set_app_routes({1: ["dev_a"]})             # no session open
+    b.set_app_routes({1: ["dev_a"]}, gen=gen)    # routes from the old session
+
+    assert _FakeEngine.instances == []
+    assert b._apps == {}
+
+
+def test_stale_gen_is_ignored_after_a_restart(monkeypatch):
+    b = _hub_session(monkeypatch)
+    old = b.apps_gen
+    b.destroy_sink(VirtualSink(None, "cable_in"))
+    b.create_sink([_dev("dev_a")])
+
+    b.set_app_routes({1: ["dev_a"]}, gen=old)
+    assert _FakeEngine.instances == []
+    b.set_app_routes({1: ["dev_a"]}, gen=b.apps_gen)
+    assert len(_FakeEngine.instances) == 1
+
+
+def test_engine_stop_runs_with_no_backend_lock_held(monkeypatch):
+    b = _slow_session(monkeypatch)
+    _SlowEngine.release.set()
+    b.set_app_routes({1: ["dev_a"], 2: ["dev_a"]})
+    b.set_app_routes({2: ["dev_a"]})              # pid 1 dropped -> stop
+    b.destroy_sink(VirtualSink(None, "cable_in"))  # pid 2 -> stop
+
+    assert _SlowEngine.stop_saw_lock_free == [True, True]
+
+
+def test_dropped_engine_stops_before_a_new_one_starts(monkeypatch):
+    b = _hub_session(monkeypatch)
+    b.set_app_routes({1: ["dev_a"]})
+    engine1 = _FakeEngine.instances[0]
+    seen = []
+    orig_start = _FakeEngine.start
+
+    def start(self):
+        seen.append(engine1.stopped)
+        orig_start(self)
+    monkeypatch.setattr(_FakeEngine, "start", start)
+
+    b.set_app_routes({2: ["dev_a"]})  # pid 1 drops, pid 2 appears in the same poll
+
+    assert seen == [True]
+
+
+def test_set_legs_sent_once_while_engine_legs_lag(monkeypatch):
+    b = _hub_session(monkeypatch)
+    b.set_app_routes({1: ["dev_a", "dev_b"]})
+    engine = _FakeEngine.instances[0]
+    calls = []
+    engine.set_legs = lambda ids: calls.append(list(ids))   # legs never "open"
+
+    for _ in range(3):
+        b.set_app_routes({1: ["dev_a", "dev_b"]})
+    assert calls == []                                       # already sent at start
+
+    for _ in range(3):
+        b.set_app_routes({1: ["dev_a"]})
+    assert calls == [["dev_a"]]
