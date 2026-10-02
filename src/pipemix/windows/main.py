@@ -9,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 
 from pipemix.windows.backend import WasapiBackend
 from pipemix.windows.controller import Controller
-from pipemix.linux.services.config.config_manager import ConfigManager, default_log_dir
+from pipemix.config import ConfigManager, default_log_dir
 
 log = logging.getLogger("pipemix.main")
 

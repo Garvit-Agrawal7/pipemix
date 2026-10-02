@@ -5,8 +5,8 @@ import logging
 from typing import TYPE_CHECKING, Callable
 
 from pipemix.models import AudioDevice
-from pipemix.linux.services.backend import BackendError
-from pipemix.linux.ui.bridge import to_json
+from pipemix.models import BackendError
+from pipemix.bridge import to_json
 
 if TYPE_CHECKING:
     from pipemix.linux.controller import Controller

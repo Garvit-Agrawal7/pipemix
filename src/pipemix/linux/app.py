@@ -7,10 +7,10 @@ from pathlib import Path
 import webview
 
 from pipemix.linux.controller import Controller
-from pipemix.linux.services.backend.pactl_backend import PactlBackend
-from pipemix.linux.services.config.config_manager import ConfigManager
-from pipemix.linux.ui.api import Api
-from pipemix.linux.ui.bridge import Bridge
+from pipemix.linux.pactl_backend import PactlBackend
+from pipemix.config import ConfigManager
+from pipemix.api import Api
+from pipemix.bridge import Bridge
 
 log = logging.getLogger("pipemix.app")
 

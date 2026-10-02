@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path, PureWindowsPath
 from xml.etree import ElementTree
 
-from pipemix.linux.services.backend import BackendError
+from pipemix.models import BackendError
 
 log = logging.getLogger(__name__)
 

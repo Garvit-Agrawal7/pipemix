@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, call
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # GObject / GLib are C extensions that may not be installed in a CI runner.
 # Stub them just enough for the Controller module to import.
@@ -34,11 +33,11 @@ sys.modules.setdefault("gi", _gi_mock)
 sys.modules.setdefault("gi.repository", _gi_mock.repository)
 
 from pipemix.models import AudioDevice, DeviceKind, SessionState, VirtualSink
-from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
-from pipemix.linux.services.config.config_manager import ConfigManager
+from pipemix.models import BackendError, BackendHealth, BackendStatus
+from pipemix.config import ConfigManager
 import pipemix.linux.controller as controller_module
 from pipemix.linux.controller import Controller
-from pipemix.linux.ui.api import Api
+from pipemix.api import Api
 
 
 def _dev(mac: str, name: str = "Dev", sink: str | None = None, kind=DeviceKind.BLUETOOTH) -> AudioDevice:

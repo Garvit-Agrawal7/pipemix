@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pipemix.models import DeviceKind
 from pipemix.windows.wasapi.devices import FORM_FACTOR_DIGITAL_DISPLAY, device_kind, is_virtual

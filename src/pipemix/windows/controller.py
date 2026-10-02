@@ -8,8 +8,8 @@ import time
 from typing import TYPE_CHECKING
 
 from pipemix.models import AudioDevice, SessionState, SharingSession, VirtualSink
-from pipemix.linux.services.backend import BackendError, BackendHealth
-from pipemix.linux.services.config.config_manager import ConfigManager
+from pipemix.models import BackendError, BackendHealth
+from pipemix.config import ConfigManager
 from pipemix.windows.signal import SignalEmitter
 from pipemix.windows.wasapi.notify import DeviceMonitor
 
