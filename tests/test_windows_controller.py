@@ -698,6 +698,89 @@ def test_sync_apps_noop_after_stop_sharing(tmp_path: Path, monkeypatch) -> None:
     b.set_app_routes.assert_not_called()
 
 
+# -- Idle grace: a paused app keeps its capture for APP_IDLE_S --
+
+def _idle_setup(tmp_path: Path, monkeypatch):
+    """A hub session with one app playing, and a clock the test moves."""
+    monkeypatch.setattr(controller_module, "APP_POLL_S", 999)
+    clock = [1000.0]
+    monkeypatch.setattr(controller_module.time, "monotonic", lambda: clock[0])
+    b = _backend(engine="hub")
+    ctrl = _ctrl(tmp_path, backend=b)
+    d1 = _dev("EP1")
+    ctrl.devices = {d1.id: d1}
+    ctrl.start_sharing([d1])
+    hub = ctrl.active_sink()
+    app = {"id": 42, "name": "App", "sink": hub, "endpoint": hub, "active": True,
+           "mute": False, "exe": "a.exe"}
+    b.list_streams.return_value = [app]
+    ctrl._sync_apps()
+    return ctrl, b, app, clock
+
+
+def _routes(b) -> dict:
+    return b.set_app_routes.call_args[0][0]
+
+
+def test_pause_then_resume_within_grace_keeps_the_engine(tmp_path: Path, monkeypatch) -> None:
+    ctrl, b, app, clock = _idle_setup(tmp_path, monkeypatch)
+    b.set_app_routes.reset_mock()
+
+    app["active"] = False
+    app["endpoint"] = "EP1"          # a stale idle session can win the dedupe
+    for _ in range(3):
+        clock[0] += 5
+        ctrl._sync_apps()
+    app["active"] = True
+    app["endpoint"] = ctrl.active_sink()
+    ctrl._sync_apps()
+
+    assert all(42 in c[0][0] for c in b.set_app_routes.call_args_list)
+    assert _routes(b)[42] == ["EP1"]
+
+
+def test_idle_past_grace_drops_the_app(tmp_path: Path, monkeypatch) -> None:
+    ctrl, b, app, clock = _idle_setup(tmp_path, monkeypatch)
+    app["active"] = False
+
+    clock[0] += controller_module.APP_IDLE_S - 1
+    ctrl._sync_apps()
+    assert 42 in _routes(b)
+
+    clock[0] += 2
+    ctrl._sync_apps()
+    assert 42 not in _routes(b)
+    assert 42 not in ctrl._app_active
+
+
+def test_vanished_app_drops_immediately(tmp_path: Path, monkeypatch) -> None:
+    ctrl, b, app, clock = _idle_setup(tmp_path, monkeypatch)
+    b.list_streams.return_value = []
+
+    ctrl._sync_apps()
+
+    assert _routes(b) == {}
+    assert ctrl._app_active == {}
+
+
+def test_app_playing_elsewhere_drops_immediately(tmp_path: Path, monkeypatch) -> None:
+    ctrl, b, app, clock = _idle_setup(tmp_path, monkeypatch)
+    app["endpoint"] = "EP1"          # active, but bypassing the hub
+
+    ctrl._sync_apps()
+
+    assert 42 not in _routes(b)
+
+
+def test_stop_sharing_clears_idle_state(tmp_path: Path, monkeypatch) -> None:
+    ctrl, b, app, clock = _idle_setup(tmp_path, monkeypatch)
+    assert 42 in ctrl._app_active
+
+    ctrl.stop_sharing()
+
+    assert ctrl._app_active == {}
+
+
 if __name__ == "__main__":
     import tempfile
 

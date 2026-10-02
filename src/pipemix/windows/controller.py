@@ -20,6 +20,9 @@ log = logging.getLogger(__name__)
 
 # How often a hub-mode session reconciles per-app captures with what is playing.
 APP_POLL_S = 1.0
+# How long a paused app keeps its capture, so resuming loses no audio. Capped,
+# or idle legs stream silence forever and Bluetooth links never sleep.
+APP_IDLE_S = 30.0
 
 
 def locked(fn):
@@ -58,6 +61,8 @@ class Controller(SignalEmitter):
         self._app_poll: threading.Thread | None = None
         self._app_poll_stop: threading.Event | None = None
         self._last_streams: list[dict] | None = None
+        # pid -> monotonic time it was last seen playing into the hub.
+        self._app_active: dict[int, float] = {}
 
         # Last known exe per stream pid, so a pin can be recorded/cleared in
         # config.data["pinned_apps"] by exe even after the pid exits.
@@ -65,9 +70,7 @@ class Controller(SignalEmitter):
 
         self.master_volume = 50
 
-        # The page calls in on pywebview's thread while the notification
-        # worker fires on its own thread, and both change which outputs the
-        # session feeds.
+        # Page calls (pywebview thread) and the notify worker both change the legs.
         self._lock = threading.RLock()
 
     # ---------- Startup / shutdown ----------
@@ -106,10 +109,9 @@ class Controller(SignalEmitter):
     def clean_orphans(self) -> None:
         """Restore a default output stranded by a crash.
 
-        Restores `prev_default` when it is still stranded on disk (persisted
-        by `start_sharing`, cleared by `stop_sharing`) — a crash trail. Else,
-        if no session is running and Windows' default is still our own hub
-        (CABLE Input) with nothing to blame it on, puts the default back.
+        Uses `prev_default` if it is still on disk (set by `start_sharing`, cleared
+        by `stop_sharing`). Otherwise, with no session running and the default still
+        our hub (CABLE Input), puts the default back.
         """
         try:
             # Overrides are empty this early, so any app still pinned by a
@@ -202,9 +204,8 @@ class Controller(SignalEmitter):
 
         solo = self._solo()
         if solo:
-            # The session is transparent for a lone output, so the level
-            # belongs on the device — and its row has to move with the master
-            # row.
+            # The session is transparent for a lone output, so the level belongs on
+            # the device — and its row has to move with the master row.
             self.set_device_volume(solo.id, volume, unmute)
             self.emit("devices-changed", list(self.devices.values()))
             return
@@ -224,12 +225,10 @@ class Controller(SignalEmitter):
 
     def _level_hub(self, sink: str, devices: list[AudioDevice]) -> None:
         """
-        Set the session's own level, and keep master honest for a lone output.
+        Set the session's level; with a lone output the device carries it instead.
 
-        With one output the master fader and that device's fader are two
-        handles on the same thing, so the session steps aside and the device
-        carries the level. If both carried one they would multiply, and the
-        fader would feel dead until it was most of the way up.
+        Master and that device's fader are then one control. If both carried a
+        level they would multiply, and the fader would feel dead until near the top.
         """
         solo = devices[0] if len(devices) == 1 else None
         if solo:
@@ -284,8 +283,7 @@ class Controller(SignalEmitter):
             return
 
         if self.session.sink:
-            # The session is already up, so only its legs move. Nothing is
-            # torn down, and the outputs that are staying never drop out.
+            # The session is already up, so only its legs move; staying outputs never drop out.
             self._retarget(devices)
             return
 
@@ -312,8 +310,7 @@ class Controller(SignalEmitter):
         self._prepare(devices)
         sink = self.backend.create_sink(devices)
 
-        # Set the volume before switching output, or the first moment of audio
-        # lands at whatever level the new sink happened to be at.
+        # Set the volume before switching output, or the first audio lands at the old level.
         self._level_hub(sink.name, devices)
 
         self.backend.set_default(sink.name)
@@ -325,10 +322,8 @@ class Controller(SignalEmitter):
         """Change which outputs the live session feeds. The session itself stays put."""
         self._prepare(devices)
 
-        # Going from one output to two, the session is still at 100 because
-        # the lone device was carrying the level. Duck it before the new leg
-        # attaches, or that output gets one blast at full volume before the
-        # level catches up.
+        # One output to two: the session is still at 100 (the lone device carried the
+        # level), so duck it before the new leg attaches or that output blasts at full volume.
         if self._hub_level(devices) < self._hub_level(self.session.devices):
             self._level_hub(self.session.sink.name, devices)
 
@@ -379,9 +374,8 @@ class Controller(SignalEmitter):
                 expected = self.active_sink()
             else:
                 expected = None
-            # Some apps only pick an output when they open their audio, so a
-            # route can be accepted (pin set, default changed) and still not
-            # take effect until the app reopens its stream.
+            # Some apps pick an output only when opening audio, so an accepted route
+            # may not apply until the app reopens its stream.
             stuck = bool(s.get("active") and expected and s.get("endpoint") != expected)
             out.append({
                 **s,
@@ -392,20 +386,33 @@ class Controller(SignalEmitter):
 
     @locked
     def _sync_apps(self) -> None:
-        """Hand the backend every app playing into the hub, with the outputs
-        it wants (its override, else every session device), and push the app
-        list to the page when it changed. Hub mode only. Never raises."""
+        """Hand the backend each app playing into the hub with its outputs (override,
+        else every session device); push the app list if it changed. Hub mode only.
+        Never raises. A paused app stays routed for APP_IDLE_S, so resuming is instant."""
         # ponytail: 1 s poll; IAudioSessionNotification if the delay before a new app is heard matters.
         try:
             if not (self.session.is_active and self.session.sink
                     and self.backend.health().engine == "hub"):
+                self._app_active.clear()
                 return
             out = self.streams()
             hub = self.active_sink()
             session_ids = [d.id for d in self.session.devices]
+            now = time.monotonic()
+            live = {s["id"]: s for s in out}
+            for s in out:
+                if s.get("active") and s.get("endpoint") == hub:
+                    self._app_active[s["id"]] = now
+            # An idle app's endpoint is whichever stale session won the dedupe,
+            # so only an *active* one elsewhere means it left the hub.
+            self._app_active = {
+                pid: t for pid, t in self._app_active.items()
+                if pid in live and now - t < APP_IDLE_S
+                and not (live[pid].get("active") and live[pid].get("endpoint") != hub)
+            }
             routes = {
-                s["id"]: self.overrides.get(s["id"]) or session_ids
-                for s in out if s.get("active") and s.get("endpoint") == hub
+                pid: self.overrides.get(pid) or session_ids
+                for pid in self._app_active
             }
             self.backend.set_app_routes(routes)
             if out != self._last_streams:
@@ -426,10 +433,8 @@ class Controller(SignalEmitter):
         self._app_poll.start()
 
     def _sweep_pins(self, live: list[dict]) -> None:
-        """Clear pins PipeMix left behind: an exe in `pinned_apps` with no
-        override still holding it pinned. Covers both an app that reopened
-        under a new pid after `stop_sharing` couldn't reach it, and a
-        previous run's pins found at startup. Never raises."""
+        """Clear pins PipeMix left behind (an exe in `pinned_apps` with no override):
+        an app that reopened under a new pid, or a previous run's pins. Never raises."""
         pinned = self.config.data["pinned_apps"]
         if not pinned:
             return
@@ -453,10 +458,9 @@ class Controller(SignalEmitter):
     def route_stream(self, stream_id: int, ids: list[str] | None) -> None:
         """Route a stream to some outputs, or clear the route with None.
 
-        In a hub-mode session this only records the override and reconciles:
-        the app keeps playing into the hub and is captured out to each of its
-        devices (None: every session device). Otherwise it pins the app to
-        one device, and None lets it follow the machine default again."""
+        Hub mode only records the override: the app keeps playing into the hub and
+        is captured out to its devices (None: all). Otherwise it pins the app to one
+        device; None follows the machine default again."""
         devs = [d for d in (self.devices.get(i) for i in ids or []) if d and d.sink]
         exe = self._exe.get(stream_id)
         pinned = self.config.data["pinned_apps"]
@@ -516,6 +520,7 @@ class Controller(SignalEmitter):
             self.session.devices = []
             self.targets.clear()
             self.overrides.clear()
+            self._app_active.clear()
             self._last_streams = None
             try:
                 self._sweep_pins(self.backend.list_streams())
@@ -570,9 +575,7 @@ class Controller(SignalEmitter):
             if d and d.connected and d.sink
         ]
 
-        # Drop that one leg. The session stays the default sink either way, so
-        # the streams playing into it keep playing and nothing has to be
-        # moved.
+        # Drop just that leg; the session stays the default sink, so no stream has to move.
         self._set_state(SessionState.REPAIRING)
         self.backend.set_legs(self.session.sink, remaining)
         self.session.devices = remaining
@@ -590,10 +593,8 @@ class Controller(SignalEmitter):
 
     def _reelect_leader(self) -> None:
         """
-        The leader is a real device and can vanish mid-session. Pick a
-        survivor and stand a new session up on it — the fan-out has one
-        capture source, and it cannot be swapped in place. Playback gaps for
-        roughly 200 ms. If nothing is left, stop sharing entirely.
+        The leader can vanish mid-session. Rebuild on a survivor (the capture source
+        can't be swapped in place; ~200 ms gap), or stop sharing if none is left.
         """
         survivors = [
             d for d in (self.devices.get(t) for t in self.targets if t != self.backend.leader)

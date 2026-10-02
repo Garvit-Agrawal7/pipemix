@@ -12,9 +12,8 @@ from pipemix.windows.wasapi import volume as _volume
 
 log = logging.getLogger(__name__)
 
-# VB-Audio's driver always names its pair this way. A render endpoint carrying
-# "CABLE Input" is the hub's sink; a capture endpoint carrying "CABLE Output"
-# is the hub's source.
+# VB-Audio's fixed names: render "CABLE Input" is the hub's sink, capture
+# "CABLE Output" its source.
 CABLE_INPUT_HINT = "CABLE Input"
 CABLE_OUTPUT_HINT = "CABLE Output"
 
@@ -22,9 +21,7 @@ CABLE_OUTPUT_HINT = "CABLE Output"
 def _capture_endpoints() -> list[tuple[str, str]]:
     """[(endpoint id, friendly name)] for every active capture endpoint.
 
-    `wasapi/devices.py` only enumerates render endpoints; the VB-CABLE probe
-    needs the capture flow too, so this asks pycaw for it directly rather
-    than growing devices.py a flow argument for one caller.
+    devices.py only enumerates render endpoints; this one caller asks pycaw directly.
     """
     from pycaw.constants import DEVICE_STATE, EDataFlow
     from pycaw.utils import AudioUtilities
@@ -65,11 +62,11 @@ class WasapiBackend:
         cable_in, cable_out = self._find_cable()
         if cable_in and cable_out:
             return BackendStatus(
-                BackendHealth.OK, "VB-CABLE detected — outputs stay in sync.", engine="hub",
+                BackendHealth.OK, "VB-CABLE detected — outputs are synced in software; Bluetooth delay is not compensated.", engine="hub",
             )
         return BackendStatus(
             BackendHealth.OK,
-            "Running in mirror mode — outputs may drift up to 50 ms apart. "
+            "Running in mirror mode — outputs may drift apart. "
             "Install VB-CABLE for synced output.",
             engine="leader",
         )
@@ -100,15 +97,12 @@ class WasapiBackend:
         return cable_in, cable_out
 
     def restore_target(self, devices: list[AudioDevice] = ()) -> str | None:
-        """The endpoint to put back as default when a session ends: the
-        current Windows default, unless that is CABLE Input (our own hub) —
-        then the first connected device in `devices` that isn't the cable,
-        else the first connected output from `list_outputs()` (which already
-        hides virtual endpoints), else None. Never raises.
+        """The default to restore when a session ends: the current default, unless
+        it is CABLE Input (our hub) — then the first connected non-cable device in
+        `devices`, else the first of `list_outputs()`, else None. Never raises.
 
-        Only CABLE Input is rejected here, not every virtual endpoint — a
-        user who deliberately defaults to e.g. Voicemeeter must still get it
-        back.
+        Only CABLE Input is rejected, not every virtual endpoint: a user who
+        defaults to e.g. Voicemeeter must get it back.
         """
         cable_in, _ = self._find_cable()
         current = self.get_default()
@@ -147,11 +141,10 @@ class WasapiBackend:
 
     def move_stream(self, stream_id: int, target: str | None) -> None:
         """
-        Route one app to `target`, or clear its pin with None so the app
-        goes back to following the machine default.
+        Route one app to `target`, or None to clear its pin and follow the default.
 
-        Unlike `pactl move-sink-input`, this sets a *persisted preference* —
-        the app may not pick it up until it next opens an audio stream.
+        A persisted preference, not a live move: the app may not pick it up until
+        it next opens an audio stream.
         """
         if not self._app_router.available:
             raise BackendError("Per-app routing is not available on this system.")
@@ -162,10 +155,8 @@ class WasapiBackend:
             raise BackendError(f"Failed to move stream {stream_id} to {target}: {e}") from e
 
     def _route_stream(self, pid: int, target: str | None) -> None:
-        """Persist `pid`'s route and track whether it now points at our hub,
-        so `destroy_sink` knows which apps to unpin when the session ends. A
-        manual route to some other real device is the user's choice — leave
-        it alone."""
+        """Persist `pid`'s route and track whether it points at our hub, so
+        `destroy_sink` knows what to unpin. Routes to real devices are left alone."""
         self._app_router.route(pid, target)
         if target == self._hub:
             self._routed.add(pid)
@@ -182,19 +173,14 @@ class WasapiBackend:
         """
         Start the fan-out engine for this session and return its handle.
 
-        Hub mode starts no engine at all: apps already play into CABLE Input,
-        silent on its own, and per-app routing (`set_app_routes`) captures
-        each app's own audio to send it where it belongs — see
-        PER-APP-ROUTING.md. `sink.legs` still lists every selected device so
-        callers that read it (the Apps tab, the UI) don't need to special
-        case the engine mode. Leader mode elects one of the selected devices
-        and loopback-captures it; it is not a leg — it already plays through
-        the OS path, and looping it back to itself would feed it its own
-        echo. Either way the previous default is remembered so `destroy_sink`
-        can restore it.
+        Hub mode starts no engine: apps play into the silent CABLE Input and
+        `set_app_routes` captures each app out to its devices. `sink.legs` still
+        lists every selected device, so callers needn't care about the mode.
+        Leader mode loopback-captures one selected device; it is not a leg, as it
+        already plays through the OS and would echo itself. Either way the previous
+        default is kept for `destroy_sink`.
 
-        The Controller switches the Windows default to `sink.name`, after it
-        has set the level.
+        The Controller then switches the default to `sink.name`, after the level.
         """
         if not devices:
             raise BackendError("No devices selected.")
@@ -240,10 +226,8 @@ class WasapiBackend:
         return devices[0].id
 
     def set_legs(self, sink: VirtualSink, devices: list[AudioDevice]) -> None:
-        """Make the engine feed exactly these outputs. In leader mode the
-        leader is excluded, whether or not it is still in `devices`. In hub
-        mode `sink.module` is None (see `create_sink`) — only `sink.legs` is
-        updated; the actual fan-out is per-app, via `set_app_routes`."""
+        """Make the engine feed exactly these outputs, never the leader. In hub mode
+        only `sink.legs` changes; the fan-out is per-app, via `set_app_routes`."""
         wanted = [d for d in devices if d.id != self._leader]
         engine: Engine | None = sink.module
         if engine is not None:
@@ -252,13 +236,10 @@ class WasapiBackend:
         log.info("%s now feeds %s", sink.name, sorted(sink.legs))
 
     def set_app_routes(self, routes: dict[int, list[str]]) -> None:
-        """Reconcile per-app capture engines against `routes` (pid -> the
-        device ids that app should be heard on right now), called once per
-        Controller poll. One `Engine(pid=...)` runs per routed pid; a pid
-        that drops out of `routes` gets its engine stopped, and one whose
-        device ids changed gets `set_legs` — never a new engine. Never
-        raises: a pid that fails to start is logged and skipped, and is not
-        retried again until it leaves `routes` and comes back."""
+        """Reconcile per-app engines with `routes` (pid -> device ids), once per poll:
+        one `Engine(pid=...)` per pid, stopped when it drops out, `set_legs` when its
+        devices change. Never raises; a pid that fails to start is skipped until it
+        leaves `routes` and returns."""
         wanted = set(routes)
 
         for pid in list(self._apps):
@@ -326,9 +307,8 @@ class WasapiBackend:
         self._leader = None
 
     def find_orphans(self) -> list[VirtualSink]:
-        """Nothing leaks on Windows — there are no kernel modules to unload.
-        The crash-recovery problem here is a stranded default endpoint, not
-        an orphaned sink."""
+        """No-op: Windows has no modules to leak. Crash recovery here is about a
+        stranded default endpoint."""
         return []
 
     def get_volume(self, sink: str) -> int:
