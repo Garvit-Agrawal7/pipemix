@@ -119,7 +119,7 @@ class PROPVARIANT_BLOB(Structure):
     ]
 
 
-def process_loopback_params(pid: int) -> tuple[AUDIOCLIENT_ACTIVATION_PARAMS, PROPVARIANT_BLOB]:
+def loopback_params(pid: int) -> tuple[AUDIOCLIENT_ACTIVATION_PARAMS, PROPVARIANT_BLOB]:
     """Activation params capturing `pid` and its child processes.
 
     Returns the params too, because the PROPVARIANT only points at them: the
@@ -135,7 +135,7 @@ def process_loopback_params(pid: int) -> tuple[AUDIOCLIENT_ACTIVATION_PARAMS, PR
     return params, blob
 
 
-def process_loopback_format():
+def loopback_format():
     """The format a process-loopback client is initialized with.
 
     Its `GetMixFormat` is not supported, so we pick one: 48 kHz stereo float.

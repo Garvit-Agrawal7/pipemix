@@ -40,7 +40,7 @@ def test_engine_source_id_source():
 from pipemix.windows.wasapi import com
 
 
-def test_process_loopback_constants():
+def test_loopback_constants():
     assert com.AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK == 1
     assert com.PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE == 0
     assert com.VT_BLOB == 65
@@ -51,8 +51,8 @@ def test_activation_params_struct():
     assert ctypes.sizeof(com.AUDIOCLIENT_ACTIVATION_PARAMS) == 12
 
 
-def test_process_loopback_params():
-    params, blob = com.process_loopback_params(1234)
+def test_loopback_params():
+    params, blob = com.loopback_params(1234)
     assert params.ActivationType == 1
     assert params.ProcessLoopbackParams.TargetProcessId == 1234
     assert params.ProcessLoopbackParams.ProcessLoopbackMode == 0
@@ -71,8 +71,8 @@ def test_propvariant_blob_offsets():
     assert blob.pBlobData.offset == 16
 
 
-def test_process_loopback_format():
-    fmt = com.process_loopback_format()
+def test_loopback_format():
+    fmt = com.loopback_format()
     assert fmt.wFormatTag == 3
     assert fmt.nChannels == 2
     assert fmt.nSamplesPerSec == 48000

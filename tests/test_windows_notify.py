@@ -81,15 +81,15 @@ def test_registration_happens_off_the_calling_thread(monitor_with_log):
     monitor.stop()
 
     registered_on = [entry[1] for entry in log if entry[0] == "register"]
-    entered_apartment_on = [entry[1] for entry in log if entry[0] == "coinit"]
+    coinit_on = [entry[1] for entry in log if entry[0] == "coinit"]
 
     assert registered_on, f"never registered; log={log}"
     assert caller not in registered_on, (
         f"registered on the calling thread {caller!r} — COM marshals "
         f"notifications back to an STA that never pumps a message loop"
     )
-    assert entered_apartment_on, f"worker never entered an apartment; log={log}"
-    assert entered_apartment_on[0] == registered_on[0], (
+    assert coinit_on, f"worker never entered an apartment; log={log}"
+    assert coinit_on[0] == registered_on[0], (
         "the thread that registered is not the one that entered the apartment"
     )
 

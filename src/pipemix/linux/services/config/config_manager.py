@@ -9,7 +9,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-def _default_config_path() -> Path:
+def _default_path() -> Path:
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
         return Path(appdata) / "PipeMix" / "config.json"
@@ -27,7 +27,7 @@ def default_log_dir() -> Path:
 class ConfigManager:
 
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or _default_config_path()
+        self.path = path or _default_path()
         self.data: dict = {
             "devices": {}, "presets": {}, "last_preset": None, "prev_default": None,
             "pinned_apps": [],

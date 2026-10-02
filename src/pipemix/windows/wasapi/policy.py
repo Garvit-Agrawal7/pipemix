@@ -63,7 +63,7 @@ def _combase():
     return dll
 
 
-def _ro_get_activation_factory(class_id: str, iid: str) -> ctypes.c_void_p | None:
+def _get_factory(class_id: str, iid: str) -> ctypes.c_void_p | None:
     import comtypes
 
     dll = _combase()
@@ -102,7 +102,7 @@ class AppRouter:
         self.available = False
         for iid in (_IID_WIN11, _IID_WIN10):
             try:
-                ptr = _ro_get_activation_factory(_CLASS_ID, iid)
+                ptr = _get_factory(_CLASS_ID, iid)
             except OSError:
                 ptr = None
             if ptr:
