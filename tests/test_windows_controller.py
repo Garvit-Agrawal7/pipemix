@@ -868,6 +868,110 @@ def test_stop_sharing_clears_idle_state(tmp_path: Path, monkeypatch) -> None:
     assert ctrl._app_active == {}
 
 
+# -- A stale poll and a slow engine shutdown never hold up the next session --
+
+def test_sync_apps_of_a_stopped_poll_touches_nothing(tmp_path: Path, monkeypatch) -> None:
+    b = _backend(engine="hub")
+    ctrl = _ctrl(tmp_path, backend=b)
+    d1 = _dev("EP1")
+    ctrl.devices = {d1.id: d1}
+    ctrl.start_sharing([d1])                             # the next session is already up
+    hub = ctrl.active_sink()
+    b.list_streams.return_value = [{"id": 42, "name": "App", "sink": hub, "endpoint": hub,
+                                    "active": True, "mute": False, "exe": "a.exe"}]
+    b.set_app_routes.reset_mock()
+    pushed = []
+    ctrl.connect("streams-changed", lambda *a: pushed.append(a))
+
+    old = threading.Event()
+    old.set()
+    ctrl._sync_apps(old)                                 # the previous session's poll
+
+    b.set_app_routes.assert_not_called()
+    assert pushed == []
+
+    ctrl._sync_apps(threading.Event())                   # the live poll still syncs
+    b.set_app_routes.assert_called_once()
+    assert len(pushed) == 1
+
+
+def test_poll_stopped_during_set_app_routes_pushes_nothing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(controller_module, "APP_POLL_S", 999)
+    b = _backend(engine="hub")
+    ctrl = _ctrl(tmp_path, backend=b)
+    d1 = _dev("EP1")
+    ctrl.devices = {d1.id: d1}
+    ctrl.start_sharing([d1])
+    hub = ctrl.active_sink()
+    b.list_streams.return_value = [{"id": 42, "name": "App", "sink": hub, "endpoint": hub,
+                                    "active": True, "mute": False, "exe": "a.exe"}]
+    ctrl._last_streams = None
+    pushed = []
+    ctrl.connect("streams-changed", lambda *a: pushed.append(a))
+    stop = threading.Event()
+    b.set_app_routes.side_effect = lambda *a, **k: stop.set()  # stop + restart mid-call
+
+    ctrl._sync_apps(stop)
+
+    b.set_app_routes.assert_called()
+    assert pushed == []
+
+
+def test_stop_sharing_does_not_wait_for_app_engines_to_exit(tmp_path: Path, monkeypatch) -> None:
+    from pipemix.windows import backend as backend_mod
+
+    release = threading.Event()
+    engines = []
+
+    class _SlowJoin:
+        def __init__(self, source_id=None, *, pid=None):
+            self.source_id, self.pid = source_id, pid
+            self.signalled = self.joined = False
+            engines.append(self)
+
+        def start(self):
+            pass
+
+        def set_legs(self, ids):
+            pass
+
+        def stop(self, wait=True):
+            self.signalled = True
+            if wait:
+                release.wait(1)
+                self.joined = True
+
+    monkeypatch.setattr(backend_mod, "Engine", _SlowJoin)
+    b = backend_mod.WasapiBackend()
+    hub = BackendStatus(BackendHealth.OK, "ok", engine="hub")
+    # Nothing here may reach the real Windows default or endpoints.
+    b._probe = lambda: hub
+    b._find_cable = lambda: ("cable_in", "cable_out")
+    b.restore_target = lambda devices=(): "prev"
+    b.get_default = lambda: "prev"
+    b.list_outputs = lambda: []
+    b.list_streams = lambda: []
+    b.set_default = lambda sink: None
+    b.set_volume = lambda sink, volume: None
+    b.set_mute = lambda sink, mute: None
+    b.get_volume = lambda sink: 50
+    ctrl = _ctrl(tmp_path, backend=b)
+    d1 = _dev("EP1")
+    ctrl.devices = {d1.id: d1}
+    ctrl.start_sharing([d1])
+    b.set_app_routes({42: ["EP1"], 43: ["EP1"]}, gen=b.apps_gen)  # as the poll would
+
+    t0 = time.monotonic()
+    ctrl.stop_sharing()
+    assert time.monotonic() - t0 < 0.5
+    assert ctrl.session.state == SessionState.IDLE
+    assert len(engines) == 2 and all(e.signalled and not e.joined for e in engines)
+
+    release.set()
+    ctrl.stop()                                          # quit path: bounded join of the reaper
+    assert all(e.joined for e in engines)
+
+
 if __name__ == "__main__":
     import tempfile
 

@@ -167,10 +167,16 @@ class Engine:
         if self.error:
             raise self.error
 
-    def stop(self) -> None:
+    def stop(self, wait: bool = True) -> None:
+        """Stop the pump. wait=False only signals it: within one POLL_MS tick the pump
+        stops feeding the legs and closes them and the source on its own thread."""
         self._stop.set()
+        if not wait:
+            return
         if self._thread:
             self._thread.join(timeout=5)  # covers the opener's join in _close
+            if self._thread.is_alive():
+                log.warning("Engine pump %s still running after 5 s, abandoning it", self._thread.name)
         self._thread = None
 
     def set_legs(self, device_ids) -> None:
