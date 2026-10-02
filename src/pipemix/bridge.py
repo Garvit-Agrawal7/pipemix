@@ -21,10 +21,6 @@ def to_json(obj: Any) -> Any:
         return obj.value
     if is_dataclass(obj) and not isinstance(obj, type):
         return {k: to_json(v) for k, v in asdict(obj).items()}
-    if isinstance(obj, (list, tuple)):
-        return [to_json(v) for v in obj]
-    if isinstance(obj, dict):
-        return {k: to_json(v) for k, v in obj.items()}
     return obj
 
 
@@ -73,8 +69,8 @@ class Bridge:
             f"window.pipemix && window.pipemix.push({json.dumps(event)}, {json.dumps(payload)})"
         )
 
-    def _on_devices(self, _controller, devices) -> None:
-        self._push("devices", self.api._devices_payload(devices))
+    def _on_devices(self, _controller, _devices) -> None:
+        self._push("devices", self.api._devices_payload())
 
     def _on_state(self, controller, state) -> None:
         # Signals fire synchronously on the emitting thread, so the sink read

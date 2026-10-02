@@ -1,86 +1,29 @@
 from __future__ import annotations
 
-import sys
 import threading
 import time
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-
-_gi_mock = MagicMock()
-
-
-class _FakeGObject:
-    Object = type("Object", (), {
-        "__init__": lambda self, *a, **kw: None,
-        "emit": lambda self, *a, **kw: None,
-    })
-    SignalFlags = type("SignalFlags", (), {"RUN_FIRST": 0})()
-
-
-class _FakeGLib:
-    SOURCE_REMOVE = False
-
-    @staticmethod
-    def timeout_add(*a, **kw):
-        pass
-
-
-_gi_mock.repository.GObject = _FakeGObject
-_gi_mock.repository.GLib = _FakeGLib
-
-sys.modules.setdefault("gi", _gi_mock)
-sys.modules.setdefault("gi.repository", _gi_mock.repository)
-
-from pipemix.models import AudioDevice, DeviceKind, SessionState, VirtualSink
-from pipemix.models import BackendHealth, BackendStatus
-from pipemix.config import ConfigManager
+from conftest import mkdev as _dev
+from pipemix.models import SessionState
 import pipemix.linux.controller as controller_module
-from pipemix.linux.controller import Controller
 from pipemix.api import Api
 
 A, B = "AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"
 
 
-def _dev(i, sink=None, kind=DeviceKind.BLUETOOTH):
-    return AudioDevice(id=i, name=i, sink=sink, kind=kind, connected=sink is not None)
-
-
-def _create(devices):
-    return VirtualSink(999, VirtualSink.make_name(), {d.sink: 1 for d in devices if d.sink})
-
-
 @pytest.fixture
 def glib(monkeypatch):
-    # sys.modules.setdefault means test_routing's stub may be the live one, so patch per test.
     g = MagicMock()
     monkeypatch.setattr(controller_module, "GLib", g)
     return g
 
 
-def _fake_set_legs(s, ds):
-    fresh = {d.sink for d in ds if d.sink} - set(s.legs)
-    s.legs = {d.sink: 1 for d in ds if d.sink}
-    return fresh
-
-
 @pytest.fixture
-def ctrl(tmp_path, glib):
-    b = MagicMock()
-    b.health.return_value = BackendStatus(BackendHealth.OK, "ok")
-    b.find_orphans.return_value = []
-    b.list_outputs.return_value = []
-    b.list_streams.return_value = []
-    b.create_sink.side_effect = _create
-    b.set_legs.side_effect = _fake_set_legs
-    c = Controller(b, ConfigManager(tmp_path / "config.json"))
-    c.monitor = MagicMock()
-    c.monitor.connected.return_value = []
-    c._bg = lambda fn, *a: fn(*a)
-    c.start()
-    return c
+def ctrl(make_ctrl, glib):
+    return make_ctrl(track_legs=True)
 
 
 def _rechecks(glib, ctrl):

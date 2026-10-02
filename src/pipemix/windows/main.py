@@ -49,18 +49,17 @@ def print_status(ctrl: Controller) -> None:
 
     print("\n  Available Outputs:")
     for d in ctrl.devices.values():
-        battery = f" (Battery: {d.battery}%)" if d.battery is not None else ""
         status = "Connected" if d.connected else "Disconnected"
         print(f"    [{'✓' if d.connected else ' '}] [{d.kind.value:9}] "
-              f"{d.name:<30} ID: {d.id:<36} {status}{battery}")
+              f"{d.name:<30} ID: {d.id:<36} {status}")
 
     print(f"{bar}\n  [s] share all connected  [t] stop  [r] rescan devices  [q] quit\n{bar}\n")
 
 
 def run_console(ctrl: Controller) -> None:
     """Dashboard plus a blocking read of stdin."""
-    ctrl.connect("state-changed", lambda state: log.info("Session state: %s", state.value.upper()))
-    ctrl.connect("devices-changed", lambda devs: log.info("Device list refreshed (%d known)", len(devs)))
+    ctrl.connect("state-changed", lambda _, state: log.info("Session state: %s", state.value.upper()))
+    ctrl.connect("devices-changed", lambda _, devs: log.info("Device list refreshed (%d known)", len(devs)))
 
     ctrl.start()
     print_status(ctrl)
@@ -104,15 +103,14 @@ def main() -> None:
     parser.add_argument("--cli", action="store_true", help="Interactive text dashboard")
     parser.add_argument("--list", action="store_true", help="List all detected audio outputs")
     parser.add_argument("--share", metavar="IDS", help="Share to comma-separated device IDs")
-    parser.add_argument("--refresh", action="store_true", help="Re-scan audio outputs (startup also clears orphaned sinks)")
     parser.add_argument("--debug", action="store_true", help="Verbose logging")
     args = parser.parse_args()
 
     setup_logging(args.debug)
 
-    if not (args.cli or args.list or args.share or args.refresh):
+    if not (args.cli or args.list or args.share):
         # Deferred: pywebview is a GUI-only dependency, and --list/--cli/
-        # --share/--refresh must keep working on a machine that lacks it.
+        # --share must keep working on a machine that lacks it.
         from pipemix.windows.app import run_gui
         sys.exit(run_gui())
 
@@ -130,10 +128,6 @@ def main() -> None:
             status = "Connected" if d.connected else "Disconnected"
             print(f"[{d.kind.value:9}] {d.name:<30} ID: {d.id:<36} ({status})")
         print("-" * 60)
-        sys.exit(0)
-
-    if args.refresh:
-        ctrl.refresh()
         sys.exit(0)
 
     ctrl.refresh()

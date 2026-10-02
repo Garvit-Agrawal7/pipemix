@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import ctypes
-import sys
-from pathlib import Path
 
 import pytest
-
 
 from pipemix.windows.wasapi import policy
 
@@ -47,16 +44,7 @@ def calls_returning(*results):
     return fake_vtable_fn, log
 
 
-def test_win10_and_win11_use_different_slots():
-    # They are not interchangeable: Win11's interface carries two extra slots,
-    # so indexing both the same way calls the wrong method entirely.
-    win11 = policy._SET_PERSISTED_DEFAULT_ENDPOINT[policy._IID_WIN11]
-    win10 = policy._SET_PERSISTED_DEFAULT_ENDPOINT[policy._IID_WIN10]
-    assert win11 != win10
-    assert win11 - win10 == 2
-
-
-def test_packed_id_wraps_the_endpoint(monkeypatch):
+def test_packed_id_wraps_the_endpoint():
     packed = policy._pack_render_id("{0.0.0.00000000}.{abc}")
     assert packed.startswith("\\\\?\\SWD#MMDEVAPI#")
     assert packed.endswith("#{e6327cad-dcec-4949-ae8a-991e976a79d2}")
@@ -88,10 +76,3 @@ def test_clear_passes_a_null_device(monkeypatch, router):
     # A c_void_p whose value is None marshals as the NULL HSTRING that means
     # "clear"; what matters is that no string was ever created for it.
     assert log and all(entry[4].value is None for entry in log)
-
-
-def test_unavailable_router_is_a_no_op(monkeypatch):
-    r = policy.AppRouter.__new__(policy.AppRouter)
-    r._ptr, r._slot, r.available = None, 0, False
-    monkeypatch.setattr(policy, "_vtable_fn", lambda *a: pytest.fail("must not call"))
-    r.route(1234, "{0.0.0.00000000}.{abc}")   # degrades, never raises

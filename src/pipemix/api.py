@@ -4,7 +4,6 @@ import functools
 import logging
 from typing import TYPE_CHECKING, Callable
 
-from pipemix.models import AudioDevice
 from pipemix.models import BackendError
 from pipemix.bridge import to_json
 
@@ -36,16 +35,13 @@ class Api:
 
     # ---------- Selection ----------
 
-    def _devices_payload(self, devices: list[AudioDevice] | None = None) -> list[dict]:
+    def _devices_payload(self) -> list[dict]:
         """Every device as the page sees it, selection bookkeeping refreshed first."""
-        if devices is None:
-            devices = list(self._controller.devices.values())
-
         preset = self._controller.config.presets.get(self._controller.config.last_preset or "", {})
         wanted = preset.get("devices", [])
 
         out = []
-        for dev in devices:
+        for dev in self._controller.devices.values():
             # An offline device cannot be shared to, so it cannot stay ticked, and
             # one the session takes back when it returns has to be ticked again.
             if not dev.connected:
@@ -77,11 +73,6 @@ class Api:
             else:
                 self._controller.stop_sharing()
 
-    def _clear_preset(self) -> None:
-        """A hand-toggled device no longer matches the preset."""
-        if self._controller.config.last_preset:
-            self._controller.config.last_preset = None
-
     # ---------- What the page asks for on load ----------
 
     @call
@@ -103,7 +94,9 @@ class Api:
     def toggle_device(self, dev_id: str, active: bool) -> list[dict]:
         with self._controller._lock:
             self._selected[dev_id] = active
-            self._clear_preset()
+            # A hand-toggled device no longer matches the preset.
+            if self._controller.config.last_preset:
+                self._controller.config.last_preset = None
             # A live session follows the ticks immediately.
             if self._controller.session.is_active:
                 self._apply_selection()

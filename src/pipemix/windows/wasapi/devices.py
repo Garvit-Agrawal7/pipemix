@@ -59,8 +59,8 @@ def is_virtual(enumerator: str | None) -> bool:
     return (enumerator or "").upper() == "ROOT"
 
 
-def list_outputs(include_virtual: bool = False) -> list[AudioDevice]:
-    """Every active render endpoint, exactly as Windows reports it.
+def list_outputs(include_virtual: bool = False, flow: str = "eRender") -> list[AudioDevice]:
+    """Every active render endpoint (or `flow="eCapture"`), exactly as Windows reports it.
 
     A Bluetooth headset appears twice (Stereo and Hands-Free); both are kept, as
     they are two real outputs.
@@ -76,9 +76,7 @@ def list_outputs(include_virtual: bool = False) -> list[AudioDevice]:
     from pycaw.utils import AudioUtilities
 
     devices = []
-    for d in AudioUtilities.GetAllDevices(
-        EDataFlow.eRender.value, DEVICE_STATE.ACTIVE.value
-    ):
+    for d in AudioUtilities.GetAllDevices(EDataFlow[flow].value, DEVICE_STATE.ACTIVE.value):
         if d is None:
             continue
         if not include_virtual and is_virtual(d.properties.get(PKEY_EnumeratorName)):
@@ -104,11 +102,3 @@ def default_output_id() -> str | None:
         log.warning("No default render endpoint: %s", e)
         return None
 
-
-if __name__ == "__main__":
-    import comtypes
-
-    comtypes.CoInitialize()
-    default = default_output_id()
-    for d in list_outputs():
-        print(f"{'*' if d.id == default else ' '} {d.kind.value:<9} {d.name}\n  {d.id}")

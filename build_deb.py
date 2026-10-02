@@ -1,4 +1,3 @@
-import os
 import shutil
 import subprocess
 import sys
@@ -21,19 +20,17 @@ def main():
 
     # Bail out early so a missing build never produces a half-empty .deb
     if not frontend_dist.is_dir():
-        print(f"[ERROR] Frontend build not found: {frontend_dist}")
-        print("Build the UI first, then re-run this script:")
-        print("  cd frontend && npm install && npm run build")
-        sys.exit(1)
+        sys.exit(f"[ERROR] Frontend build not found: {frontend_dist}\n"
+                 "Build the UI first: cd frontend && npm install && npm run build")
 
-    if build_dir.exists():
-        shutil.rmtree(build_dir)
+    shutil.rmtree(build_dir, ignore_errors=True)
 
-    os.makedirs(pkg_dir / "DEBIAN", exist_ok=True)
-    os.makedirs(pkg_dir / "usr" / "bin", exist_ok=True)
-    os.makedirs(pkg_dir / "usr" / "share" / "pipemix" / "src", exist_ok=True)
-    os.makedirs(pkg_dir / "usr" / "share" / "applications", exist_ok=True)
-    os.makedirs(pkg_dir / "usr" / "share" / "icons" / "hicolor" / "512x512" / "apps", exist_ok=True)
+    def put(rel, text, mode=None):
+        path = pkg_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        if mode:
+            path.chmod(mode)
 
     # This keeps the exact import hierarchy: import pipemix.app works out-of-the-box
     shutil.copytree(
@@ -45,14 +42,14 @@ def main():
     # pywebview loads this at runtime
     shutil.copytree(frontend_dist, pkg_dir / "usr" / "share" / "pipemix" / "web")
 
-    logo_src = project_root / "data" / "icons" / "pipemix.png"
-    if logo_src.exists():
-        shutil.copy(logo_src, pkg_dir / "usr" / "share" / "icons" / "hicolor" / "512x512" / "apps" / "pipemix.png")
+    icon_dir = pkg_dir / "usr" / "share" / "icons" / "hicolor" / "512x512" / "apps"
+    icon_dir.mkdir(parents=True)
+    shutil.copy(project_root / "data" / "icons" / "pipemix.png", icon_dir / "pipemix.png")
 
     # pipewire-pulse, not pulseaudio-utils: the app refuses plain PulseAudio.
     # pipewire-bin (pw-dump, run directly) comes with pipewire-pulse. gir1.2-* is
     # pywebview's GTK backend, which python3-webview doesn't pull in.
-    control_content = f"""Package: pipemix
+    put("DEBIAN/control", f"""Package: pipemix
 Version: {version}
 Section: sound
 Priority: optional
@@ -65,21 +62,15 @@ Description: Route audio to several outputs at once
  PipeMix plays the same audio through any number of PipeWire sinks --
  Bluetooth, USB, HDMI or built-in -- with a volume fader for each one,
  saved presets, and per-application routing.
-"""
-    with open(pkg_dir / "DEBIAN" / "control", "w", encoding="utf-8") as f:
-        f.write(control_content)
+""")
 
     # PYTHONPATH so `import pipemix.linux.app` resolves from the installed tree
-    launcher_content = """#!/bin/bash
+    put("usr/bin/pipemix", """#!/bin/bash
 export PYTHONPATH="/usr/share/pipemix/src:$PYTHONPATH"
 exec python3 /usr/share/pipemix/src/pipemix/linux/main.py "$@"
-"""
-    launcher_path = pkg_dir / "usr" / "bin" / "pipemix"
-    with open(launcher_path, "w", encoding="utf-8") as f:
-        f.write(launcher_content)
-    os.chmod(launcher_path, 0o755)
+""", 0o755)
 
-    desktop_content = """[Desktop Entry]
+    put("usr/share/applications/pipemix.desktop", """[Desktop Entry]
 Name=PipeMix
 Comment=Route audio to several outputs at once
 Exec=/usr/bin/pipemix
@@ -89,13 +80,9 @@ Type=Application
 Categories=AudioVideo;Audio;Utility;
 Keywords=Audio;Bluetooth;PipeWire;Mixer;
 StartupNotify=true
-"""
-    with open(pkg_dir / "usr" / "share" / "applications" / "pipemix.desktop", "w", encoding="utf-8") as f:
-        f.write(desktop_content)
+""")
 
     # Debian policy and the GPL require the licence to ship with the binary
-    doc_dir = pkg_dir / "usr" / "share" / "doc" / "pipemix"
-    os.makedirs(doc_dir, exist_ok=True)
     header = (
         "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n"
         "Upstream-Name: pipemix\n"
@@ -109,21 +96,13 @@ StartupNotify=true
     )
     licence = (project_root / "LICENSE").read_text(encoding="utf-8")
     licence = "".join(" " + ln if ln.strip() else " .\n" for ln in licence.splitlines(keepends=True))
-    (doc_dir / "copyright").write_text(header + licence, encoding="utf-8")
+    put("usr/share/doc/pipemix/copyright", header + licence)
 
     print("Building Debian package...")
-    result = subprocess.run(
-        ["dpkg-deb", "--build", str(pkg_dir), str(build_dir / "pipemix.deb")],
-        capture_output=True,
-        text=True
-    )
-    if result.returncode == 0:
-        print(f"\n[SUCCESS] Created Debian package: {build_dir / 'pipemix.deb'}")
-        print("To install it, run:")
-        print("  sudo dpkg -i build/pipemix.deb")
-    else:
-        print(f"\n[ERROR] Failed to build package: {result.stderr}")
-        sys.exit(1)
+    subprocess.run(["dpkg-deb", "--build", str(pkg_dir), str(build_dir / "pipemix.deb")], check=True)
+    print(f"\n[SUCCESS] Created Debian package: {build_dir / 'pipemix.deb'}")
+    print("To install it, run:")
+    print("  sudo dpkg -i build/pipemix.deb")
 
 if __name__ == "__main__":
     main()

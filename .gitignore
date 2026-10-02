@@ -11,6 +11,7 @@ dist/
 
 frontend/node_modules/
 frontend/dist/
+frontend/tsconfig.tsbuildinfo
 
 # Local agent instructions
 CLAUDE.md

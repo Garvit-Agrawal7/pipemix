@@ -6,11 +6,10 @@ import time
 
 from pipemix.models import AudioDevice, VirtualSink
 from pipemix.models import BackendError, BackendHealth, BackendStatus
-from pipemix.windows.wasapi.devices import PKEY_FriendlyName, default_output_id, list_outputs
+from pipemix.windows.wasapi.devices import default_output_id, list_outputs
 from pipemix.windows.wasapi.engine import Engine
 from pipemix.windows.wasapi import policy as _policy
 from pipemix.windows.wasapi import sessions as _sessions
-from pipemix.windows.wasapi import volume as _volume
 
 log = logging.getLogger(__name__)
 
@@ -20,31 +19,22 @@ CABLE_INPUT_HINT = "CABLE Input"
 CABLE_OUTPUT_HINT = "CABLE Output"
 
 
-def _capture_endpoints() -> list[tuple[str, str]]:
-    """[(endpoint id, friendly name)] for every active capture endpoint.
-
-    devices.py only enumerates render endpoints; this one caller asks pycaw directly.
-    """
-    from pycaw.constants import DEVICE_STATE, EDataFlow
+def _endpoint_volume(device_id: str):
+    import comtypes
+    from pycaw.api.endpointvolume import IAudioEndpointVolume
     from pycaw.utils import AudioUtilities
 
-    endpoints = []
-    for d in AudioUtilities.GetAllDevices(EDataFlow.eCapture.value, DEVICE_STATE.ACTIVE.value):
-        if d is None:
-            continue
-        endpoints.append((d.id, d.properties.get(PKEY_FriendlyName) or d.id))
-    return endpoints
+    dev = AudioUtilities.GetDeviceEnumerator().GetDevice(device_id)
+    iface = dev.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None)
+    return iface.QueryInterface(IAudioEndpointVolume)
 
 
 class WasapiBackend:
 
     def __init__(self) -> None:
         self._app_router = _policy.AppRouter()
-        self._prev_default: str | None = None
-        self._leader: str | None = None
+        self.leader: str | None = None
         self._status: BackendStatus | None = None
-        self._hub: str | None = None
-        self._routed: set[int] = set()
         self._apps: dict[int, Engine] = {}
         self._failed_apps: set[int] = set()
         # pid -> device ids last handed to that app's engine (engine.legs lags while opening).
@@ -55,11 +45,8 @@ class WasapiBackend:
         self._apps_lock = threading.Lock()
         # Threads joining stopped engines; `close` waits for them on exit.
         self._reapers: list[threading.Thread] = []
-
-    @property
-    def leader(self) -> str | None:
-        """The elected leader's endpoint id in leader mode, else None."""
-        return self._leader
+        self._hub: str | None = None  # the session endpoint (cable_in, or the leader)
+        self._routed: set[int] = set()  # pids pinned to _hub, unpinned in destroy_sink
 
     def health(self) -> BackendStatus:
         """Never raises. Cached until the next `reprobe` — a cable
@@ -102,9 +89,9 @@ class WasapiBackend:
 
         cable_out = None
         try:
-            for device_id, name in _capture_endpoints():
-                if CABLE_OUTPUT_HINT in name:
-                    cable_out = device_id
+            for d in list_outputs(include_virtual=True, flow="eCapture"):
+                if CABLE_OUTPUT_HINT in d.name:
+                    cable_out = d.id
                     break
         except Exception as e:
             log.debug("Could not enumerate capture endpoints during VB-CABLE probe: %s", e)
@@ -165,18 +152,13 @@ class WasapiBackend:
             raise BackendError("Per-app routing is not available on this system.")
         log.info("Moving stream %d → %s", stream_id, target or "(cleared)")
         try:
-            self._route_stream(stream_id, target)
+            self._app_router.route(stream_id, target)
         except Exception as e:
             raise BackendError(f"Failed to move stream {stream_id} to {target}: {e}") from e
-
-    def _route_stream(self, pid: int, target: str | None) -> None:
-        """Persist `pid`'s route and track whether it points at our hub, so
-        `destroy_sink` knows what to unpin. Routes to real devices are left alone."""
-        self._app_router.route(pid, target)
-        if target == self._hub:
-            self._routed.add(pid)
+        if target and target == self._hub:
+            self._routed.add(stream_id)
         else:
-            self._routed.discard(pid)
+            self._routed.discard(stream_id)
 
     def set_stream_mute(self, stream_id: int, mute: bool) -> None:
         try:
@@ -192,9 +174,7 @@ class WasapiBackend:
         `set_app_routes` captures each app out to its devices. `sink.legs` still
         lists every selected device, so callers needn't care about the mode.
         Leader mode loopback-captures one selected device; it is not a leg, as it
-        already plays through the OS and would echo itself. Either way the previous
-        default is kept for `destroy_sink`.
-
+        already plays through the OS and would echo itself. 
         The Controller then switches the default to `sink.name`, after the level.
         """
         if not devices:
@@ -206,15 +186,12 @@ class WasapiBackend:
                 raise BackendError(
                     "VB-CABLE endpoints disappeared before the session could start."
                 )
-            self._leader = None
-            self._prev_default = self.restore_target(devices)
+            self.leader = None
             hub_id = cable_in
             engine = None  # per-app engines are started later, by set_app_routes.
         else:
-            self._leader = self._elect_leader(devices)
-            self._prev_default = self.restore_target(devices)
-            hub_id = self._leader
-            engine = Engine(self._leader)
+            self.leader = hub_id = self._elect_leader(devices)
+            engine = Engine(self.leader)
             # ponytail: runs under the Controller lock (start_sharing, leader re-election), so it
             # is held for one loopback open (tens of ms, ~0.5 s for Bluetooth, up to
             # Engine.start's 10 s on a wedged driver). Moving it out needs
@@ -247,7 +224,7 @@ class WasapiBackend:
     def set_legs(self, sink: VirtualSink, devices: list[AudioDevice]) -> None:
         """Make the engine feed exactly these outputs, never the leader. In hub mode
         only `sink.legs` changes; the fan-out is per-app, via `set_app_routes`."""
-        wanted = [d for d in devices if d.id != self._leader]
+        wanted = [d for d in devices if d.id != self.leader]
         engine: Engine | None = sink.module
         if engine is not None:
             engine.set_legs([d.id for d in wanted])
@@ -269,7 +246,7 @@ class WasapiBackend:
         never touches its state; whatever it started late is just stopped."""
         with self._apps_lock:
             gen = self.apps_gen if gen is None else gen
-            if gen != self.apps_gen or self._hub is None or self._leader is not None:
+            if gen != self.apps_gen or self._hub is None or self.leader is not None:
                 return
             dead = [self._apps.pop(pid) for pid in list(self._apps) if pid not in routes]
             self._failed_apps &= set(routes)  # forget a failure once its pid leaves routes
@@ -373,53 +350,42 @@ class WasapiBackend:
             self._app_legs.clear()
         self._stop_engines(([engine] if engine is not None else []) + list(apps.values()))
 
+        # The controller's pinned_apps sweep only reaches apps whose exe it knows.
         for pid in self._routed:
             try:
                 self._app_router.route(pid, None)
             except Exception as e:
                 log.warning("Failed to unpin stream %d from the hub: %s", pid, e)
         self._routed.clear()
-
-        if self._prev_default:
-            try:
-                self.set_default(self._prev_default)
-            except BackendError:
-                log.exception("Could not restore previous default %r", self._prev_default)
-        self._prev_default = None
-        self._leader = None
-
-    def find_orphans(self) -> list[VirtualSink]:
-        """No-op: Windows has no modules to leak. Crash recovery here is about a
-        stranded default endpoint."""
-        return []
+        self.leader = None
 
     def get_volume(self, sink: str) -> int:
         """0-100, or 100 if it cannot be read."""
         try:
-            return _volume.get_volume(sink)
+            return round(_endpoint_volume(sink).GetMasterVolumeLevelScalar() * 100)
         except Exception as e:
             log.warning("Failed to get volume for %s: %s", sink, e)
             return 100
 
     def set_volume(self, sink: str, volume: int) -> None:
+        from pycaw.constants import IID_Empty
+
         vol = max(0, min(100, volume))
         try:
-            _volume.set_volume(sink, vol)
+            _endpoint_volume(sink).SetMasterVolumeLevelScalar(vol / 100, IID_Empty)
         except Exception as e:
             raise BackendError(f"Failed to set volume of {sink} to {vol}%: {e}") from e
 
     def set_mute(self, sink: str, mute: bool) -> None:
+        from pycaw.constants import IID_Empty
+
         try:
-            _volume.set_mute(sink, mute)
+            _endpoint_volume(sink).SetMute(mute, IID_Empty)
         except Exception as e:
             raise BackendError(f"Failed to set mute state for {sink}: {e}") from e
 
     def get_default(self) -> str | None:
-        try:
-            return default_output_id()
-        except Exception as e:
-            log.warning("Failed to read default endpoint: %s", e)
-            return None
+        return default_output_id()
 
     def set_default(self, sink: str) -> None:
         try:

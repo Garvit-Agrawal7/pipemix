@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import sys
 import threading
-from pathlib import Path
 from types import ModuleType
 
 import pytest
@@ -64,7 +63,7 @@ def monitor_with_log(monkeypatch):
     monkeypatch.delitem(sys.modules, NOTIFY, raising=False)
 
     notify = importlib.import_module(NOTIFY)
-    monkeypatch.setattr(notify.DeviceMonitor, "_render_endpoints", lambda self: [])
+    monkeypatch.setattr(notify, "list_outputs", lambda: [])
     yield notify.DeviceMonitor(), log
 
     # The imported module has the stubs bound into it; drop it so anything

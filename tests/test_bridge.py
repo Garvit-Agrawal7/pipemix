@@ -4,6 +4,12 @@ import json
 import threading
 import time
 
+import pytest
+
+gi = pytest.importorskip("gi")
+if getattr(gi, "_pipemix_stub", False):  # conftest's stand-in has no real GObject signals
+    pytest.skip("needs real PyGObject", allow_module_level=True)
+
 from gi.repository import GObject
 
 from pipemix.models import AudioDevice, DeviceKind, SessionState
@@ -38,8 +44,8 @@ class BlockingWindow:
 
 
 class FakeApi:
-    def _devices_payload(self, devices):
-        return [{"id": d.id, "selected": True} for d in devices]
+    def _devices_payload(self):
+        return [{"id": "aa", "selected": True}]
 
 
 def _bridge() -> tuple[Bridge, FakeController, BlockingWindow]:

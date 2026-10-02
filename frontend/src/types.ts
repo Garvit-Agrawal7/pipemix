@@ -1,4 +1,4 @@
-// Hand-mirrored from src/pipemix/models.py and services/backend/__init__.py.
+// Hand-mirrored from src/pipemix/models.py.
 // Enums cross the bridge as their .value string (bridge.to_json).
 
 export type DeviceKind = "bluetooth" | "usb" | "hdmi" | "builtin" | "unknown";

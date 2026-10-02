@@ -82,7 +82,6 @@ pipemix                 # launch the window
 pipemix --cli           # interactive text dashboard
 pipemix --list          # list detected outputs and their IDs
 pipemix --share IDS     # share to a comma-separated list of device IDs
-pipemix --refresh       # re-scan outputs
 pipemix --debug         # verbose logging
 ```
 
@@ -110,9 +109,9 @@ Everything runs in one process:
 | Piece | Job |
 | --- | --- |
 | `controller.py` | The state machine. Owns the session, reacts to Bluetooth events, drives the backend. |
-| `services/backend/pactl_backend.py` | Every `pactl` call in the app. Nothing else shells out. |
-| `services/bluetooth/device_monitor.py` | BlueZ over D-Bus — connect, disconnect, battery. |
-| `ui/api.py`, `ui/bridge.py` | The JS-callable surface, and Controller signals pushed to the page. |
+| `linux/pactl_backend.py` | Every `pactl` call in the app. Nothing else shells out. |
+| `linux/bluetooth.py` | BlueZ over D-Bus — connect and disconnect. |
+| `api.py`, `bridge.py` | The JS-callable surface, and Controller signals pushed to the page. |
 | `frontend/` | React + TypeScript, served to a pywebview window. |
 
 ## Development

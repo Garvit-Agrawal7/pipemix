@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { call, msg } from "./api";
-import MasterFader from "./MasterFader";
+import { call } from "./api";
+import Foot from "./Foot";
 import { KIND } from "./Outputs";
 import type { AudioDevice, SessionState, Stream } from "./types";
 import {
@@ -21,7 +21,7 @@ export interface AppsProps {
   streams: Stream[];
   onMaster: (v: number) => void;
   onStreams: (update: (prev: Stream[]) => Stream[]) => void;
-  onError: (msg: string) => void;
+  onError: (e: unknown) => void;
 }
 
 function label(s: Stream, outs: AudioDevice[], live: boolean): string {
@@ -37,37 +37,28 @@ export default function Apps(props: AppsProps) {
 
   const { master, state, streams, onMaster, onStreams, onError } = props;
   const sessionLive = state === "active";
-  const busy = state === "starting" || state === "stopping";
   const anyConnected = props.devices.some((d) => d.connected);
 
   // Nothing picked means following the session.
-  const route = async (id: number, ids: string[] | null) => {
+  const route = (id: number, ids: string[] | null) => {
     const devices = ids?.length ? ids : null;
     onStreams((prev) => prev.map((s) => (s.id === id ? { ...s, devices } : s)));
-    try {
-      await call<null>("route_stream", id, devices);
-    } catch (e) {
-      onError(msg(e));
-      return;
-    }
     // Some apps pick an output only when opening audio, and Windows has no live
     // stream notifications, so re-check later to learn whether the route took.
-    setTimeout(() => {
-      call<Stream[]>("list_streams")
-        .then((fresh) => onStreams(() => fresh))
-        .catch((e: unknown) => onError(msg(e)));
-    }, 1500);
+    call<null>("route_stream", id, devices).then(
+      () =>
+        setTimeout(() => {
+          call<Stream[]>("list_streams")
+            .then((fresh) => onStreams(() => fresh))
+            .catch(onError);
+        }, 1500),
+      onError,
+    );
   };
 
-  const mute = async (s: Stream) => {
-    onStreams((prev) =>
-      prev.map((x) => (x.id === s.id ? { ...x, mute: !s.mute } : x)),
-    );
-    try {
-      await call<null>("set_stream_mute", s.id, !s.mute);
-    } catch (e) {
-      onError(msg(e));
-    }
+  const mute = (s: Stream) => {
+    onStreams((prev) => prev.map((x) => (x.id === s.id ? { ...x, mute: !s.mute } : x)));
+    call<null>("set_stream_mute", s.id, !s.mute).catch(onError);
   };
 
   const outs = props.devices.filter((d) => d.connected && d.sink);
@@ -128,7 +119,7 @@ export default function Apps(props: AppsProps) {
                     aria-pressed={s.mute}
                     onClick={(e) => {
                       e.stopPropagation();
-                      void mute(s);
+                      mute(s);
                     }}
                   >
                     {s.mute ? <IconMuted /> : <IconVolume />}
@@ -150,7 +141,7 @@ export default function Apps(props: AppsProps) {
                             className={pin ? "tg" : "tg on"}
                             aria-pressed={!pin}
                             aria-label={`Enable all outputs for ${s.name}`}
-                            onClick={() => void route(s.id, pin ? null : cur)}
+                            onClick={() => route(s.id, pin ? null : cur)}
                           >
                             <i />
                           </button>
@@ -169,13 +160,13 @@ export default function Apps(props: AppsProps) {
                           </span>
                           <div className="grow">
                             <div className="lvnm">{d.name}</div>
-                            <div className="lvmeta">{KIND[d.kind] ?? "Audio"}</div>
+                            <div className="lvmeta">{KIND[d.kind]}</div>
                           </div>
                           <button
                             className={has ? (pin ? "tg on" : "tg on soft") : "tg"}
                             aria-pressed={has}
                             aria-label={`Play ${s.name} on ${d.name}`}
-                            onClick={() => void route(s.id, next)}
+                            onClick={() => route(s.id, next)}
                           >
                             <i />
                           </button>
@@ -195,37 +186,15 @@ export default function Apps(props: AppsProps) {
         </div>
       </div>
 
-      <div className="foot">
-        <MasterFader
-          value={master}
-          disabled={!anyConnected}
-          onChange={onMaster}
-          onError={onError}
-        />
-        <div className="acts">
-          <button
-            className={sessionLive ? "btn pri stop" : busy ? "btn pri dis" : "btn pri"}
-            disabled={busy || !anyConnected}
-            onClick={() =>
-              void call(sessionLive ? "stop_sharing" : "start_sharing").catch((e: unknown) =>
-                onError(msg(e)),
-              )
-            }
-          >
-            {state === "starting" ? "Starting..." : state === "stopping" ? "Stopping..." : sessionLive ? "Stop sharing" : "Start sharing"}
-          </button>
-          <button
-            className="btn gho"
-            onClick={() =>
-              void call("refresh").catch((e: unknown) =>
-                onError(msg(e)),
-              )
-            }
-          >
-            Refresh
-          </button>
-        </div>
-      </div>
+      <Foot
+        state={state}
+        live={sessionLive}
+        disabled={!anyConnected}
+        grey={false}
+        master={master}
+        onMaster={onMaster}
+        onError={onError}
+      />
     </>
   );
 }

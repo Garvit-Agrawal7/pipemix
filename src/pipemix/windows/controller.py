@@ -4,12 +4,11 @@ import functools
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from pipemix.models import AudioDevice, SessionState, SharingSession, VirtualSink
 from pipemix.models import BackendError, BackendHealth
 from pipemix.config import ConfigManager
-from pipemix.windows.signal import SignalEmitter
 from pipemix.windows.wasapi.notify import DeviceMonitor
 
 if TYPE_CHECKING:
@@ -24,6 +23,27 @@ APP_POLL_S = 1.0
 APP_IDLE_S = 30.0
 # Total time quitting may wait: in-flight app captures finishing, then engines closing.
 QUIT_S = 3.0
+
+
+class SignalEmitter:
+    """Minimal connect/emit, one signal name at a time, any number of handlers."""
+
+    def __init__(self) -> None:
+        self._handlers: dict[str, list[Callable]] = {}
+
+    def connect(self, name: str, handler: Callable) -> None:
+        self._handlers.setdefault(name, []).append(handler)
+
+    def emit(self, name: str, *args) -> None:
+        for handler in list(self._handlers.get(name, ())):
+            try:
+                # Emitter first, as GObject does: the handlers are shared with Linux
+                # (`Bridge._on_health(self, _controller, status)`) and would TypeError.
+                handler(self, *args)
+            except Exception:
+                # A dead handler on the UI side must not take a routing
+                # operation down with it, nor stop its sibling handlers.
+                log.exception("Handler for signal %r raised", name)
 
 
 def locked(fn):
@@ -109,10 +129,7 @@ class Controller(SignalEmitter):
             # Pins made while idle are still ours to undo on the way out.
             self.overrides.clear()
             self._last_streams = None
-            try:
-                self._sweep_pins(self.backend.list_streams())
-            except Exception as e:
-                log.warning("Failed to sweep leftover per-app pins: %s", e)
+            self._sweep_leftover_pins()
         for poll in self._app_polls:
             poll.join(max(0.0, deadline - time.monotonic()))
         stuck = [p for p in self._app_polls if p.is_alive()]
@@ -134,10 +151,7 @@ class Controller(SignalEmitter):
         try:
             # Overrides are empty this early, so any app still pinned by a
             # previous run gets cleared here rather than waiting for streams().
-            try:
-                self._sweep_pins(self.backend.list_streams())
-            except Exception as e:
-                log.warning("Failed to sweep leftover per-app pins: %s", e)
+            self._sweep_leftover_pins()
 
             stranded = self.config.data.get("prev_default")
             restored_stranded = False
@@ -196,12 +210,7 @@ class Controller(SignalEmitter):
         """Keep the volume we already know; otherwise ask the sink, else 50%."""
         if dev_id in self.devices:
             return self.devices[dev_id].volume
-        if not sink:
-            return 50
-        try:
-            return self.backend.get_volume(sink)
-        except Exception:
-            return 50
+        return self.backend.get_volume(sink) if sink else 50
 
     def set_device_volume(self, dev_id: str, volume: int, unmute: bool = False) -> None:
         dev = self.devices.get(dev_id)
@@ -291,7 +300,6 @@ class Controller(SignalEmitter):
             if self.backend.health().engine == "hub":
                 self._start_app_poll()  # syncs once straight away
         except Exception as e:
-            log.error("Failed to start session: %s", e)
             self._set_state(SessionState.ERROR)
             self.stop_sharing()
             raise
@@ -446,6 +454,12 @@ class Controller(SignalEmitter):
             wake.wait(APP_POLL_S)
             wake.clear()
 
+    def _sweep_leftover_pins(self) -> None:
+        try:
+            self._sweep_pins(self.backend.list_streams())
+        except Exception as e:
+            log.warning("Failed to sweep leftover per-app pins: %s", e)
+
     def _sweep_pins(self, live: list[dict]) -> None:
         """Clear pins PipeMix left behind (an exe in `pinned_apps` with no override):
         an app that reopened under a new pid, or a previous run's pins. Never raises."""
@@ -537,10 +551,7 @@ class Controller(SignalEmitter):
             self.overrides.clear()
             self._app_active.clear()
             self._last_streams = None
-            try:
-                self._sweep_pins(self.backend.list_streams())
-            except Exception as e:
-                log.warning("Failed to sweep leftover per-app pins: %s", e)
+            self._sweep_leftover_pins()
             self.emit("devices-changed", list(self.devices.values()))
             self._set_state(SessionState.IDLE)
         except Exception as e:

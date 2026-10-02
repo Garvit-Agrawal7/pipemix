@@ -1,38 +1,11 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
-
-from pipemix.models import AudioDevice, DeviceKind, VirtualSink
-from pipemix.models import BackendError, BackendHealth, BackendStatus
 from pipemix.config import ConfigManager
 from pipemix.windows.controller import Controller
-
-
-def _dev(dev_id: str, name: str = "Dev", connected: bool = True) -> AudioDevice:
-    return AudioDevice(id=dev_id, name=name, sink=dev_id if connected else None,
-                        kind=DeviceKind.BLUETOOTH, connected=connected)
-
-
-def _fake_create(devices: list[AudioDevice]) -> VirtualSink:
-    if not devices:
-        raise BackendError("No devices selected.")
-    return VirtualSink(MagicMock(), VirtualSink.make_name(), {d.id: 0 for d in devices})
-
-
-def _backend(engine: str = "hub") -> MagicMock:
-    b = MagicMock()
-    b.health.return_value = BackendStatus(BackendHealth.OK, "ok", engine=engine)
-    b.find_orphans.return_value = []
-    b.list_outputs.return_value = []
-    b.get_default.return_value = "prev_default"
-    b.restore_target.return_value = "prev_default"
-    b.get_volume.return_value = 50
-    b.leader = None
-    b.create_sink.side_effect = _fake_create
-    return b
+from test_windows_controller import _backend, _dev
 
 
 def _ctrl(tmp_path: Path, backend=None, config: ConfigManager | None = None) -> Controller:
@@ -42,7 +15,6 @@ def _ctrl(tmp_path: Path, backend=None, config: ConfigManager | None = None) -> 
     cfg = config or ConfigManager(tmp_path / "config.json")
     c = Controller(b, cfg)
     c.monitor = MagicMock()
-    c.monitor.connected.return_value = []
     return c
 
 
