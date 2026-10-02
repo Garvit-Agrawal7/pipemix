@@ -309,6 +309,8 @@ class Controller(SignalEmitter):
         log.info("Starting session with %d device(s)...", len(devices))
         self._set_state(SessionState.STARTING)
         try:
+            self.backend.reprobe()  # only here: re-election keeps the session's mode
+            self.emit("health-changed", self.backend.health())  # mode may have flipped
             self.prev_default = self.backend.restore_target(devices)
             self.config.data["prev_default"] = self.prev_default
             self.config.save()
@@ -327,11 +329,13 @@ class Controller(SignalEmitter):
         """Stand up the session and point everything that is playing at it."""
         self._prepare(devices)
         sink = self.backend.create_sink(devices)
-
-        # Set the volume before switching output, or the first audio lands at the old level.
-        self._level_hub(sink.name, devices)
-
-        self.backend.set_default(sink.name)
+        try:
+            # Set the volume before switching output, or the first audio lands at the old level.
+            self._level_hub(sink.name, devices)
+            self.backend.set_default(sink.name)
+        except Exception:
+            self.backend.destroy_sink(sink)  # nobody else holds it yet, so its engine would leak
+            raise
         # Apps follow the default into the hub; pinning them here would
         # persist past this session.
         return sink
@@ -656,6 +660,11 @@ class Controller(SignalEmitter):
             log.info("New leader elected: %s", self.active_sink())
         except Exception as e:
             log.error("Leader re-election failed: %s", e)
+            # The old sink is already destroyed: end the session so the next start is fresh.
+            try:
+                self.stop_sharing()
+            except Exception:
+                log.exception("Could not clean up after the failed re-election")
             self._set_state(SessionState.ERROR)
             raise
 

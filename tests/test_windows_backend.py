@@ -175,7 +175,7 @@ def test_health_is_cached_across_calls(monkeypatch):
     b = _backend(monkeypatch, hub=True)
     first = b.health()
     # Even if the probe would now answer differently, health() must not
-    # re-evaluate until create_sink runs.
+    # re-evaluate until reprobe runs (only before a fresh session).
     monkeypatch.setattr(backend_mod, "list_outputs", lambda: [])
     monkeypatch.setattr(backend_mod, "_capture_endpoints", lambda: [])
     assert b.health() is first
