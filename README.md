@@ -1,8 +1,7 @@
 # PipeMix
 
-Play the same audio through several outputs at once on Linux — laptop speakers
-and a Bluetooth headset together, two Bluetooth speakers in different rooms, or
-whatever combination you like — with a volume fader for each one.
+Play the same audio through several outputs at once on Linux, laptop speakers
+and a Bluetooth headset together, two Bluetooth speakers in different rooms.
 
 <img width="880" height="660" alt="outputs" src="https://github.com/user-attachments/assets/b513daf2-a827-416c-a508-74c7d9da718b" />
 
