@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "pipemix"
 version = "0.3.0"
-description = "Route audio to multiple output devices simultaneously on Linux"
+description = "Route audio to multiple output devices simultaneously on Linux and Windows"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
 
-# Linux runtime needs pactl and PyGObject (GTK4 + Gio for D-Bus) from the
+# Linux runtime needs pactl and PyGObject (GTK 3 + Gio for D-Bus) from the
 # system packages. Windows needs pycaw, which brings comtypes and psutil:
 # it hand-declares the WASAPI interfaces we would otherwise write out, and
 # does it without comtypes' GetModule, which would not survive PyInstaller.
@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pipemix = "pipemix.linux.main:main"
+pipemix = "pipemix.main:main"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/", "tests/", "README.md"]
