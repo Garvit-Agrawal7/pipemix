@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
-from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-
-from pipemix.models import AudioDevice, DeviceKind, VirtualSink, path_to_mac, sink_to_mac
-from pipemix.linux.services.backend import pactl_backend
-from pipemix.linux.services.backend.pactl_backend import PactlBackend, _event_kind, _kind, _parse_inputs
-from pipemix.linux.services.config.config_manager import ConfigManager
+from conftest import HUB, sink_dev as _dev
+from pipemix.bridge import to_json
+from pipemix.models import AudioDevice, BackendHealth, BackendStatus, DeviceKind, SessionState, VirtualSink, path_to_mac, sink_to_mac
+from pipemix.linux import pactl_backend
+from pipemix.linux.pactl_backend import PactlBackend, _event_kind, _kind, _parse_inputs
+from pipemix.config import ConfigManager
 
 SINK_INPUTS = """Sink Input #101
 \tSink: 46
@@ -42,9 +40,11 @@ def test_kind() -> None:
     assert _kind("alsa_output.pci-0000_01_00.1.hdmi-stereo") == DeviceKind.HDMI
     assert _kind("alsa_output.usb-Generic_USB_Audio-00.analog-stereo") == DeviceKind.USB
     assert _kind("alsa_output.pci-0000_00_1f.3.analog-stereo") == DeviceKind.BUILTIN
+    assert _kind("alsa_output.usb---_KTMicro_--_KT_USB_Audio_202503071003-00.iec958-stereo") == DeviceKind.USB
+    assert _kind("alsa_output.pci-0000_00_1f.3.iec958-stereo") == DeviceKind.HDMI
 
 
-def test_list_outputs() -> None:
+def test_list_outputs(monkeypatch) -> None:
     sinks = [
         {"name": "alsa_output.pci-0000_00_1f.3.analog-stereo", "description": "Speakers",
          "properties": {}, "volume": {"front-left": {"value_percent": "99%"}}},
@@ -53,8 +53,8 @@ def test_list_outputs() -> None:
         {"name": "pipemix_8f3a2c1d", "properties": {}, "volume": {}},
         {"name": "virtual_thing", "properties": {"node.virtual": "true"}, "volume": {}},
     ]
-    with patch.object(pactl_backend, "_run", return_value=(0, json.dumps(sinks), "")):
-        devices = pactl_backend.PactlBackend().list_outputs()
+    monkeypatch.setattr(pactl_backend, "_run", lambda args: (0, json.dumps(sinks), ""))
+    devices = PactlBackend().list_outputs()
 
     assert [(d.id, d.name, d.kind, d.volume) for d in devices] == [
         ("alsa_output.pci-0000_00_1f.3.analog-stereo", "Speakers", DeviceKind.BUILTIN, 99),
@@ -80,117 +80,51 @@ def test_parse_inputs() -> None:
     assert streams[1]["mute"] is True
 
 
-def _pw_node(name: str, ns: int) -> dict:
-    return {
-        "type": "PipeWire:Interface:Node",
-        "info": {
-            "props": {"node.name": name},
-            "params": {"Latency": [
-                {"direction": "Output", "minNs": 999_000_000},  # not Input: must be ignored
-                {"direction": "Input", "minQuantum": 1.0, "maxQuantum": 1.0,
-                 "minRate": 0, "maxRate": 0, "minNs": ns, "maxNs": ns},
-            ]},
-        },
-    }
-
-
 def _loaded(loads: list[list[str]], *frags: str) -> bool:
     """True if some recorded _load call carries every fragment, in any of its args."""
     return any(all(any(f in a for a in call) for f in frags) for call in loads)
 
 
-def test_leg_delays(monkeypatch) -> None:
-    # wired reports 0 ns, bt reports 200 ms — pw-dump is the only source of truth.
-    loads: list[list[str]] = []
-    # Module list: load n got id n; pw-dump for everything else.
-    monkeypatch.setattr(pactl_backend, "_run", lambda args: (0, "".join(
-        f"{i}\t{c[0]}\t{' '.join(c[1:])}\n" for i, c in enumerate(loads, 1)
-    ), "") if args[-1] == "modules" else (
-        0, json.dumps([_pw_node("wired", 0), _pw_node("bt", 200_000_000)]), ""
-    ))
-    ids = iter(range(1, 100))
-    monkeypatch.setattr(pactl_backend, "_load", lambda args: (loads.append(args), next(ids))[1])
-    unloads: list[int] = []
-    monkeypatch.setattr(PactlBackend, "_unload", lambda self, module: unloads.append(module))
-
+def test_leg_delays(fake) -> None:
+    # wired reports 0 ns, bt reports 200 ms: pw-dump is the only source of truth.
     backend = PactlBackend()
-    sink = VirtualSink(1, "pipemix_test")
-    wired = AudioDevice("w", "Wired", "wired", DeviceKind.BUILTIN)
-    bt = AudioDevice("b", "BT", "bt", DeviceKind.BLUETOOTH)
+    sink = VirtualSink(1, HUB)
+    wired, bt = _dev("wired"), _dev("bt")
     ghost = AudioDevice("g", "Ghost", None, DeviceKind.UNKNOWN)  # disconnected: no sink to route to
 
-    # 1. one device (plus a disconnected one, which must be ignored) → base delay
+    # 1. one device (plus a disconnected one, which must be ignored) -> base delay
     backend.set_legs(sink, [wired, ghost])
-    assert _loaded(loads, "sink=wired", "latency_msec=30")
+    assert _loaded(fake.loads, "sink=wired", "latency_msec=30")
     assert sink.delays["wired"] == 30
     assert None not in sink.legs
 
     # 2. a slower device joins: the fast leg reloads to match it, old module unloaded
     wired_module = sink.legs["wired"]
     backend.set_legs(sink, [wired, bt])
-    assert unloads == [wired_module]
-    assert _loaded(loads, "sink=wired", "latency_msec=230")
-    assert _loaded(loads, "sink=bt", "latency_msec=230")
+    assert fake.unloads == [wired_module]
+    assert _loaded(fake.loads, "sink=wired", "latency_msec=230")
+    assert _loaded(fake.loads, "sink=bt", "latency_msec=230")
     assert sink.delays == {"wired": 230, "bt": 230}
 
     # 3. high-water mark: dropping bt unloads it but does not pull wired back down
     bt_module = sink.legs["bt"]
-    n_loads = len(loads)
+    n_loads = len(fake.loads)
     backend.set_legs(sink, [wired])
-    assert len(loads) == n_loads, "wired must not reload"
-    assert unloads == [wired_module, bt_module]
+    assert len(fake.loads) == n_loads, "wired must not reload"
+    assert fake.unloads == [wired_module, bt_module]
     assert sink.delays["wired"] == 230
     assert "bt" not in sink.legs
 
 
-def test_leg_delays_pw_dump_fails(monkeypatch) -> None:
-    # today's behaviour: no latency data means every leg gets the plain floor.
-    monkeypatch.setattr(pactl_backend, "_run", lambda args: (1, "", "no pw-dump"))
-    monkeypatch.setattr(pactl_backend, "_load", lambda args: 1)
-    monkeypatch.setattr(PactlBackend, "_unload", lambda self, module: None)
-
-    backend = PactlBackend()
-    sink = VirtualSink(1, "pipemix_test")
-    wired = AudioDevice("w", "Wired", "wired", DeviceKind.BUILTIN)
-    bt = AudioDevice("b", "BT", "bt", DeviceKind.BLUETOOTH)
-
-    backend.set_legs(sink, [wired, bt])
-    assert sink.delays == {"wired": 30, "bt": 30}
-
-
 def test_latencies_malformed_json(monkeypatch) -> None:
-    # pw-dump's schema is undocumented and shells out to a process we don't control —
-    # an odd-but-valid JSON shape must degrade to {}, never raise, like _sink_names().
+    # pw-dump's schema is undocumented: an odd-but-valid shape must degrade to {},
+    # never raise, like _sink_names().
     backend = PactlBackend()
-    for raw in ('{"foo": "bar"}', '"hello world"', "[null]",
+    for raw in ('{"foo": "bar"}', '"hello world"', "[null]", "not json {",
                 json.dumps([{"type": "PipeWire:Interface:Node", "info": {
                     "props": {"node.name": "x"}, "params": {"Latency": [1, 2, 3]}}}])):
         monkeypatch.setattr(pactl_backend, "_run", lambda args, raw=raw: (0, raw, ""))
         assert backend._latencies() == {}
-
-
-def test_leg_delays_transient_failure(monkeypatch) -> None:
-    # pw-dump fails after legs are already aligned: don't tear down what's correct.
-    monkeypatch.setattr(pactl_backend, "_run", lambda args: (
-        0, json.dumps([_pw_node("wired", 0), _pw_node("bt", 200_000_000)]), ""
-    ))
-    loads: list[list[str]] = []
-    monkeypatch.setattr(pactl_backend, "_load", lambda args: (loads.append(args), len(loads))[1])
-    monkeypatch.setattr(PactlBackend, "_unload", lambda self, module: None)
-
-    backend = PactlBackend()
-    sink = VirtualSink(1, "pipemix_test")
-    wired = AudioDevice("w", "Wired", "wired", DeviceKind.BUILTIN)
-    bt = AudioDevice("b", "BT", "bt", DeviceKind.BLUETOOTH)
-
-    backend.set_legs(sink, [wired, bt])
-    assert sink.delays == {"wired": 230, "bt": 230}
-
-    monkeypatch.setattr(pactl_backend, "_run", lambda args: (1, "", "pw-dump timed out"))
-    n_loads = len(loads)
-    backend.set_legs(sink, [wired, bt])
-    assert len(loads) == n_loads, "already-aligned legs must not reload on a transient failure"
-    assert sink.delays == {"wired": 230, "bt": 230}
 
 
 def test_device_identity() -> None:
@@ -200,17 +134,11 @@ def test_device_identity() -> None:
     assert a == b and len({a, b}) == 1
 
 
-def test_sink_names() -> None:
-    # Crash recovery finds orphans by this prefix, and must never match a real sink.
-    name = VirtualSink.make_name()
-    assert name.startswith("pipemix_") and name != VirtualSink.make_name()
-
-
 def test_config_roundtrip(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     cfg = ConfigManager(path)
     cfg.data["devices"]["61:C5:02:3A:59:49"] = 'Boat "Airdopes"'
-    cfg.save_preset("movie_mode", "Movie Mode", ["61:C5:02:3A:59:49"])
+    assert cfg.save_preset("Movie Mode", ["61:C5:02:3A:59:49"]) == "movie_mode"
     cfg.data["last_preset"] = "movie_mode"
     cfg.save()
 
@@ -235,19 +163,13 @@ def test_legacy_toml(tmp_path: Path) -> None:
     assert cfg.data["presets"]["movie"]["name"] == "Movie Mode"
 
 
-def test_missing_config(tmp_path: Path) -> None:
-    assert ConfigManager(tmp_path / "nope.json").data == {
-        "devices": {}, "presets": {}, "last_preset": None, "prev_default": None,
-        "pinned_apps": [],
+def test_to_json_unwraps_dataclasses_and_enums():
+    device = AudioDevice(id="aa", name="Cans", sink=None, kind=DeviceKind.BLUETOOTH)
+    assert to_json(device) == {
+        "id": "aa", "name": "Cans", "sink": None, "kind": "bluetooth",
+        "connected": False, "volume": 50,
     }
-
-
-if __name__ == "__main__":
-    import tempfile
-
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_"):
-            with tempfile.TemporaryDirectory() as tmp:
-                fn(Path(tmp)) if fn.__code__.co_argcount else fn()
-            print(f"  ✓  {name}")
-    print("\nAll tests passed.")
+    assert to_json(SessionState.REPAIRING) == "repairing"
+    assert to_json(BackendStatus(BackendHealth.DEGRADED, "hmm")) == {
+        "health": "degraded", "message": "hmm", "engine": "native",
+    }

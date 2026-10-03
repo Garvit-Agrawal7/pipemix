@@ -1,11 +1,3 @@
-"""
-PipeMix — GUI startup.
-
-pywebview renders in WebKitGTK and runs the GLib main loop, so the Controller's
-GObject signals, GLib timers and Gio D-Bus BlueZ monitoring keep working. It
-pins Gtk 3.0 itself, so nothing here may require a Gtk version.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -15,10 +7,10 @@ from pathlib import Path
 import webview
 
 from pipemix.linux.controller import Controller
-from pipemix.linux.services.backend.pactl_backend import PactlBackend
-from pipemix.linux.services.config.config_manager import ConfigManager
-from pipemix.linux.ui.api import Api
-from pipemix.linux.ui.bridge import Bridge
+from pipemix.linux.pactl_backend import PactlBackend
+from pipemix.config import ConfigManager
+from pipemix.api import Api
+from pipemix.bridge import Bridge
 
 log = logging.getLogger("pipemix.app")
 
@@ -39,8 +31,7 @@ def _entry() -> str:
         if (root / "index.html").is_file():
             return str(root / "index.html")
 
-    # Returning a path that does not exist gets rendered as an unhelpful
-    # "URL not found" by pywebview's internal file server. Say what is wrong.
+    # pywebview would only say "URL not found" for a missing path; say what is wrong.
     raise FileNotFoundError(
         "No built frontend found. Looked in: "
         + ", ".join(str(c) for c in candidates)

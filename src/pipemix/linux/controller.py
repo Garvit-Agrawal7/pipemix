@@ -1,42 +1,29 @@
-"""
-PipeMix — Controller.
-
-The state machine: owns the SharingSession, reacts to Bluetooth events, runs
-crash recovery, drives the backend, and pushes updates to the UI as GObject
-signals. All business logic lives here; the UI only triggers and listens.
-"""
-
 from __future__ import annotations
 
 import functools
 import logging
 import queue
-import re
 import threading
-import time
 from typing import TYPE_CHECKING
 
 from gi.repository import GLib, GObject
 
 from pipemix.models import AudioDevice, DeviceKind, SessionState, SharingSession, VirtualSink
-from pipemix.linux.services.backend import BackendHealth
-from pipemix.linux.services.bluetooth.device_monitor import DeviceMonitor
-from pipemix.linux.services.config.config_manager import ConfigManager
+from pipemix.models import BackendHealth
+from pipemix.linux.bluetooth import DeviceMonitor
+from pipemix.config import ConfigManager
 
 if TYPE_CHECKING:
-    from pipemix.linux.services.backend.pactl_backend import PactlBackend
+    from pipemix.linux.pactl_backend import PactlBackend
 
 log = logging.getLogger(__name__)
 
-# How long to wait for PipeWire to publish a bluez sink after BlueZ says the
-# device is connected. A slow headset can take several seconds; each try is one
-# cheap pactl call and the first success exits, so the only cost of a generous
-# ceiling is paid when the sink never shows up at all.
+# How long to wait for PipeWire to publish a bluez sink after BlueZ reports the
+# connection. Slow headsets take seconds; retries are cheap and stop on success.
 SINK_TRIES = 20
 SINK_WAIT_MS = 250
 
-# How long to let a burst of pactl events settle before reacting once. A
-# session starting or a device plugging in fires several events back to back.
+# Let a burst of pactl events (session start, plug-in) settle before reacting once.
 PW_SETTLE_MS = 100
 
 # A device can report its real latency a moment after its leg loads (Bluetooth
@@ -62,18 +49,17 @@ class Controller(GObject.Object):
         "streams-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
     }
 
-    def __init__(self, backend: PactlBackend, config: ConfigManager | None = None) -> None:
+    def __init__(self, backend: PactlBackend, config: ConfigManager) -> None:
         super().__init__()
         self.backend = backend
-        self.config = config or ConfigManager()
+        self.config = config
 
-        self.monitor = DeviceMonitor()
-        self.monitor.on_connect = lambda mac: self._bg(self._on_connect, mac)
-        self.monitor.on_disconnect = lambda mac: self._bg(self._on_disconnect, mac)
-        self.monitor.on_property = lambda mac, key, value: self._bg(self._on_property, mac, key, value)
+        self.monitor = DeviceMonitor(
+            lambda mac: self._bg(self._on_connect, mac),
+            lambda mac: self._bg(self._on_disconnect, mac),
+        )
 
-        # Background jobs (BlueZ events, pactl-subscribe events) land here and
-        # run in order on the pipemix-events thread, off the GTK main loop.
+        # BlueZ and pactl-subscribe jobs run in order on pipemix-events, off the GTK loop.
         self._jobs: queue.SimpleQueue = queue.SimpleQueue()
         # Event kinds seen since the last _pw_changed — worker-thread only, no lock.
         self._pending: set[str] = set()
@@ -89,20 +75,16 @@ class Controller(GObject.Object):
         # rebuild does not drag them back.
         self.overrides: dict[int, list[str]] = {}
 
-        # A stream plays into one sink, so one routed to several outputs gets a
-        # hub of its own, fed out the same way as the session's.
+        # A stream routed to several outputs gets its own hub, fanned out like the session's.
         self.hubs: dict[int, VirtualSink] = {}
 
         self.master_volume = 50
 
-        # The page calls in on pywebview's thread while BlueZ and PipeWire
-        # events land on the pipemix-events worker, and both change which
-        # outputs the hub feeds.
+        # Page calls (pywebview thread) and BlueZ/PipeWire events (worker) both change the legs.
         self._lock = threading.RLock()
 
-        # Levels not yet sent, per sink: (level, unmute). pywebview runs each JS
-        # call on its own thread, so a drag's ticks can overtake each other in
-        # pactl; the worker only ever sends the latest.
+        # Unsent levels per sink: (level, unmute). Drag ticks arrive on separate pywebview
+        # threads and can reorder in pactl, so the worker sends only the latest.
         # ponytail: ticks waiting on _lock behind a routing change can still wake
         # out of order; stamp them with a sequence number if that ever shows.
         self._levels: dict[str, tuple[int, bool]] = {}
@@ -131,13 +113,9 @@ class Controller(GObject.Object):
 
     def stop(self) -> None:
         if self.session.is_active:
-            try:
-                self.stop_sharing()
-            except Exception as e:
-                log.error("Failed to stop sharing during shutdown: %s", e)
-        # Moving a stream onto the default sink clears its pin, so apps go back
-        # to following the default instead of staying where we put them. Done
-        # before the app hubs go, or their streams drop out for a beat.
+            self.stop_sharing()
+        # Moving a stream to the default sink clears its pin, so apps follow the default
+        # again. Done before the app hubs go, or their streams drop out for a beat.
         default = self.backend.get_default()
         if default:
             self.backend.move_streams(default)
@@ -162,12 +140,9 @@ class Controller(GObject.Object):
 
     def clean_orphans(self) -> None:
         """Destroy virtual sinks left behind by a previous crash."""
-        try:
-            for sink in self.backend.find_orphans():
-                log.warning("Destroying orphaned sink: %s", sink.name)
-                self.backend.destroy_sink(sink)
-        except Exception as e:
-            log.error("Error during crash recovery: %s", e)
+        for sink in self.backend.find_orphans():
+            log.warning("Destroying orphaned sink: %s", sink.name)
+            self.backend.destroy_sink(sink)
 
     # ---------- Devices ----------
 
@@ -199,8 +174,7 @@ class Controller(GObject.Object):
                     volume=self._volume_of(mac, hit.volume if hit else 50),
                 )
 
-            # A session output that dropped stays listed, offline, so the page can
-            # show it reconnecting and it keeps its level for when it comes back.
+            # A dropped session output stays listed offline: shown reconnecting, level kept.
             for i in self.targets - found.keys():
                 dev = self.devices.get(i)
                 if dev:
@@ -230,15 +204,12 @@ class Controller(GObject.Object):
         level, unmute = self._levels.pop(sink, (None, False))
         if level is None:
             return  # a direct set already replaced it
-        try:
-            if unmute:
-                self.backend.set_mute(sink, False)
-            self.backend.set_volume(sink, level)
-        except Exception as e:
-            log.warning("Failed to set the level on %s: %s", sink, e)
+        if unmute:
+            self.backend.set_mute(sink, False)
+        self.backend.set_volume(sink, level)
 
     @locked  # so a routing change can't land between picking the sink and queueing
-    def set_device_volume(self, dev_id: str, volume: int, unmute: bool = False) -> None:
+    def set_device_volume(self, dev_id: str, volume: int) -> None:
         dev = self.devices.get(dev_id)
         if not dev:
             return
@@ -246,23 +217,23 @@ class Controller(GObject.Object):
         if self._solo() is dev:
             self.master_volume = volume
         if dev.connected and dev.sink:
-            self._send(dev.sink, volume, unmute)
+            self._send(dev.sink, volume, True)
 
     @locked
-    def set_master_volume(self, volume: int, unmute: bool = False) -> None:
+    def set_master_volume(self, volume: int) -> None:
         self.master_volume = volume
 
         solo = self._solo()
         if solo:
             # The hub is transparent for a lone output, so the level belongs on
             # the device — and its row has to move with the master row.
-            self.set_device_volume(solo.id, volume, unmute)
+            self.set_device_volume(solo.id, volume)
             self.emit("devices-changed", list(self.devices.values()))
             return
 
         target = self.active_sink() if self.session.is_active else self.prev_default
         if target:
-            self._send(target, volume, unmute)
+            self._send(target, volume, True)
         self._level_apps(volume)
 
     def _solo(self) -> AudioDevice | None:
@@ -271,12 +242,10 @@ class Controller(GObject.Object):
 
     def _level_hub(self, sink: str, devices: list[AudioDevice]) -> None:
         """
-        Set the hub's own level, and keep master honest for a lone output.
+        Set the hub's level; with a lone output the device carries it instead.
 
-        With one output the master fader and that device's fader are two handles
-        on the same thing, so the hub steps aside and the device carries the
-        level. If both carried one they would multiply, and the fader would feel
-        dead until it was most of the way up.
+        Master and that device's fader are then one control. If both carried a
+        level they would multiply, and the fader would feel dead until near the top.
         """
         solo = devices[0] if len(devices) == 1 else None
         if solo:
@@ -324,7 +293,7 @@ class Controller(GObject.Object):
         """A wired output showed up or left, or a session Bluetooth sink was recreated."""
         try:
             wired = {d.id for d in self.backend.list_outputs() if d.kind != DeviceKind.BLUETOOTH}
-        except Exception as e:
+        except Exception as e:  # don't let a pactl hiccup swallow this batch's streams push
             log.error("Failed to check for hotplug: %s", e)
             return
         known = {i for i, d in self.devices.items() if d.kind != DeviceKind.BLUETOOTH and d.connected}
@@ -347,34 +316,6 @@ class Controller(GObject.Object):
             self._rebuild()
             self._sync_hubs()
 
-    # ---------- Presets ----------
-
-    @property
-    def presets(self) -> dict:
-        return self.config.data["presets"]
-
-    @property
-    def last_preset(self) -> str | None:
-        return self.config.data["last_preset"]
-
-    @last_preset.setter
-    def last_preset(self, preset_id: str | None) -> None:
-        self.config.data["last_preset"] = preset_id
-        self.config.save()
-
-    def save_preset(self, name: str, devices: list[str]) -> str:
-        preset_id = re.sub(r"[^a-z0-9_]", "", name.lower().replace(" ", "_"))
-        if not preset_id:
-            preset_id = f"preset_{int(time.time())}"
-        self.config.save_preset(preset_id, name, devices)
-        self.config.save()
-        log.info("Saved preset '%s' (%s): %s", name, preset_id, devices)
-        return preset_id
-
-    def delete_preset(self, preset_id: str) -> None:
-        self.config.delete_preset(preset_id)
-        self.config.save()
-
     # ---------- Sharing ----------
 
     @locked
@@ -384,8 +325,7 @@ class Controller(GObject.Object):
             return
 
         if self.session.sink:
-            # The hub is already up, so only its legs move. Nothing is torn
-            # down, and the outputs that are staying never drop out.
+            # The hub is already up, so only its legs move; staying outputs never drop out.
             self._retarget(devices)
             return
 
@@ -397,8 +337,7 @@ class Controller(GObject.Object):
             self._route(devices)
             self._adopt(devices)
             log.info("Session active: %s", self.active_sink())
-        except Exception as e:
-            log.error("Failed to start session: %s", e)
+        except Exception:
             self._set_state(SessionState.ERROR)
             self.stop_sharing()
             raise
@@ -410,8 +349,7 @@ class Controller(GObject.Object):
         # gets it torn down by stop_sharing instead of leaking it.
         sink = self.session.sink = self.backend.create_sink(devices)
 
-        # Set the volume before switching output, or the first moment of audio
-        # lands at whatever level the new sink happened to be at.
+        # Set the volume before switching output, or the first audio lands at the old level.
         self._level_hub(sink.name, devices)
 
         self.backend.set_default(sink.name)
@@ -424,10 +362,9 @@ class Controller(GObject.Object):
         # Outputs already fed are already unmuted and at their own level.
         self._prepare([d for d in devices if d.sink not in sink.legs])
 
-        # Going from one output to two, the hub is still at 100 because the lone
-        # device was carrying the level. Duck it before the new leg attaches, or
-        # that output gets one blast at full volume before the level catches up.
-        # Going back to one, it rises only once the other leg has dropped.
+        # One output to two: the hub is still at 100 (the lone device carried the level),
+        # so duck it before the new leg attaches or that output blasts at full volume.
+        # Back to one: it rises only after the other leg drops.
         duck = self._hub_level(devices) < self._hub_level(self.session.devices)
         if duck:
             self._level_hub(sink.name, devices)
@@ -515,31 +452,26 @@ class Controller(GObject.Object):
     @locked
     def stop_sharing(self) -> None:
         self._set_state(SessionState.STOPPING)
-        try:
-            if self.prev_default:
-                try:
-                    self.backend.set_default(self.prev_default)
-                    # Moved before the hubs go, or streams still in them drop
-                    # out for a beat. Ones pinned to a single device stay put.
-                    pinned = [s for s in self.overrides if s not in self.hubs]
-                    self.backend.move_streams(self.prev_default, exclude=pinned)
-                except Exception as e:
-                    log.warning("Could not restore original default sink: %s", e)
+        if self.prev_default:
+            try:
+                self.backend.set_default(self.prev_default)
+                # Moved before the hubs go, or streams still in them drop
+                # out for a beat. Ones pinned to a single device stay put.
+                pinned = [s for s in self.overrides if s not in self.hubs]
+                self.backend.move_streams(self.prev_default, exclude=pinned)
+            except Exception as e:
+                log.warning("Could not restore original default sink: %s", e)
 
-            if self.session.sink:
-                self.backend.destroy_sink(self.session.sink)
-            self._drop_hubs()
+        if self.session.sink:
+            self.backend.destroy_sink(self.session.sink)
+        self._drop_hubs()
 
-            self.session.sink = None
-            self.session.devices = []
-            self.targets.clear()
-            self.overrides.clear()
-            self.emit("devices-changed", list(self.devices.values()))
-            self._set_state(SessionState.IDLE)
-        except Exception as e:
-            log.error("Error while stopping session: %s", e)
-            self._set_state(SessionState.ERROR)
-            raise
+        self.session.sink = None
+        self.session.devices = []
+        self.targets.clear()
+        self.overrides.clear()
+        self.emit("devices-changed", list(self.devices.values()))
+        self._set_state(SessionState.IDLE)
 
     # ---------- Bluetooth events ----------
 
@@ -614,8 +546,7 @@ class Controller(GObject.Object):
             if d and d.connected and d.sink
         ]
 
-        # Drop that one leg. The hub stays the default sink either way, so the
-        # streams playing into it keep playing and nothing has to be moved.
+        # Drop just that leg; the hub stays the default sink, so no stream has to move.
         self._set_state(SessionState.REPAIRING)
         self.backend.set_legs(self.session.sink, remaining)
         self.session.devices = remaining
@@ -628,12 +559,6 @@ class Controller(GObject.Object):
 
         log.info("Continuing on: %s", [d.name for d in remaining])
         self._set_state(SessionState.ACTIVE)
-
-    def _on_property(self, mac: str, key: str, value: object) -> None:
-        dev = self.devices.get(mac)
-        if dev and key == "Battery":
-            dev.battery = int(value)
-            self.emit("devices-changed", list(self.devices.values()))
 
     @locked
     def _rebuild(self) -> None:

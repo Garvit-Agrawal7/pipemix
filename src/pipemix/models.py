@@ -1,10 +1,3 @@
-"""
-PipeMix — shared data types.
-
-Pure data: no business logic, no I/O. The Controller owns every instance;
-the UI only reads them.
-"""
-
 from __future__ import annotations
 
 import re
@@ -65,7 +58,6 @@ class AudioDevice:
     sink:      str | None
     kind:      DeviceKind
     connected: bool       = False
-    battery:   int | None = None
     volume:    int        = 50
 
     def __eq__(self, other: object) -> bool:
@@ -109,3 +101,20 @@ class SharingSession:
     @property
     def is_active(self) -> bool:
         return self.state == SessionState.ACTIVE
+
+
+class BackendHealth(Enum):
+    OK          = "ok"
+    UNAVAILABLE = "unavailable"  # pactl / PipeWire not running
+    DEGRADED    = "degraded"     # running, but something is wrong
+
+
+@dataclass
+class BackendStatus:
+    health:  BackendHealth
+    message: str  # shown in the UI
+    engine:  str = "native"  # "native" on Linux; "hub" / "leader" on Windows
+
+
+class BackendError(Exception):
+    """A backend operation failed unrecoverably."""

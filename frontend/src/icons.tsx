@@ -14,16 +14,6 @@ const base = {
 
 const sm = { ...base, viewBox: "0 0 20 20" } as const;
 
-export const Logo = ({ size = 30 }: P) => (
-  <svg className="mark" width={size} height={size} {...base} strokeWidth={1.8}>
-    <circle cx="5" cy="12" r="2.4" />
-    <path d="M7.2 11.2 15.2 6.6" />
-    <path d="M7.2 12.8 15.2 17.4" />
-    <circle cx="17.6" cy="5.4" r="2.4" />
-    <circle cx="17.6" cy="18.6" r="2.4" />
-  </svg>
-);
-
 export const IconOutputs = ({ size = 21 }: P) => (
   <svg width={size} height={size} {...base} strokeWidth={1.8}>
     <path d="M4 9.5v5h3.5L13 19V5L7.5 9.5H4z" />
@@ -132,13 +122,6 @@ export const IconTrash = ({ size = 14 }: P) => (
     <path d="M4 6h12" />
     <path d="M8 6V4.2h4V6" />
     <path d="M5.6 6l.8 9.4h7.2L14.4 6" />
-  </svg>
-);
-
-export const IconRefresh = ({ size = 13 }: P) => (
-  <svg width={size} height={size} {...sm} strokeWidth={1.8}>
-    <path d="M10 3.2a6.8 6.8 0 1 1-6.2 4" />
-    <path d="M3.4 3.4v3.6h3.6" />
   </svg>
 );
 

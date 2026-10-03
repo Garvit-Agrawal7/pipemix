@@ -1,17 +1,3 @@
-"""The WASAPI pieces `pycaw` does not declare, plus the constants we need.
-
-Everything else — `IMMDeviceEnumerator`, `IMMDevice`, `IAudioClient`,
-`IPolicyConfig`, the session and endpoint-volume interfaces — comes from
-pycaw, which declares them statically with plain `comtypes`. Only the
-streaming interfaces are missing, because pycaw never reads or writes audio,
-and so is process loopback (`ActivateAudioInterfaceAsync`), which captures a
-single app rather than an endpoint.
-
-Declared by hand rather than through `comtypes.client.GetModule` for the same
-reason pycaw does: `GetModule` writes generated wrappers to a cache at import
-time, which does not survive being frozen by PyInstaller.
-"""
-
 from __future__ import annotations
 
 from ctypes import (
@@ -27,8 +13,8 @@ AUDCLNT_SHAREMODE_SHARED = 0
 
 AUDCLNT_STREAMFLAGS_LOOPBACK            = 0x00020000
 AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY = 0x08000000
-# Lets a leg run at a rate and channel count that differ from what we feed it,
-# which is the whole reason "Bluetooth at 48k, speakers at 44.1k" is a non-problem.
+# Lets a leg's rate and channel count differ from what we feed it (Bluetooth 48k,
+# speakers 44.1k).
 AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM      = 0x80000000
 
 # IAudioCaptureClient::GetBuffer flags
@@ -133,11 +119,11 @@ class PROPVARIANT_BLOB(Structure):
     ]
 
 
-def process_loopback_params(pid: int) -> tuple[AUDIOCLIENT_ACTIVATION_PARAMS, PROPVARIANT_BLOB]:
+def loopback_params(pid: int) -> tuple[AUDIOCLIENT_ACTIVATION_PARAMS, PROPVARIANT_BLOB]:
     """Activation params capturing `pid` and its child processes.
 
-    Returns the params too, because the PROPVARIANT only points at them: the
-    caller has to keep both alive until activation completes.
+    Returns the params too: the PROPVARIANT only points at them, so keep both
+    alive until activation completes.
     """
     params = AUDIOCLIENT_ACTIVATION_PARAMS(
         AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
@@ -149,11 +135,10 @@ def process_loopback_params(pid: int) -> tuple[AUDIOCLIENT_ACTIVATION_PARAMS, PR
     return params, blob
 
 
-def process_loopback_format():
-    """The format a process-loopback client is initialized with.
+def loopback_format():
+    """The process-loopback client's format: 48 kHz stereo float.
 
-    Its `GetMixFormat` is not supported, so we pick one: 48 kHz stereo float.
-    `AUTOCONVERTPCM` on the source and on every leg makes the choice harmless.
+    Its `GetMixFormat` is unsupported; `AUTOCONVERTPCM` everywhere makes any choice work.
     """
     from pycaw.api.audioclient import WAVEFORMATEX
 

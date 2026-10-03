@@ -1,21 +1,3 @@
-"""Endpoint hotplug → the connect/disconnect callbacks the Controller expects.
-
-This is the Windows replacement for the BlueZ `DeviceMonitor`, and it keeps
-the same surface: set `on_connect` / `on_disconnect`, call `start()`. What it
-reports is an endpoint id rather than a MAC, and it reports every endpoint,
-not just Bluetooth ones — MMDevice does not distinguish, and neither do we.
-
-COM delivers these notifications on an arbitrary MTA thread and forbids doing
-real work there, so the client does nothing but drop an id on a queue; a
-worker thread resolves the endpoint's actual state and fires the callbacks.
-That also collapses the duplicate events Windows emits for one physical
-reconnect (`OnDeviceAdded` and `OnDeviceStateChanged` both fire), since the
-worker only reports a change from the state it last knew.
-
-Registration and unregistration happen on that same MTA worker thread, so
-notifications arrive without anyone needing to pump a message loop.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -27,6 +9,8 @@ import comtypes
 from pycaw.api.mmdeviceapi import IMMNotificationClient
 from pycaw.constants import DEVICE_STATE, EDataFlow
 from pycaw.utils import AudioUtilities
+
+from pipemix.windows.wasapi.devices import list_outputs
 
 log = logging.getLogger(__name__)
 
@@ -94,14 +78,6 @@ class DeviceMonitor:
         self._worker = None
         log.info("DeviceMonitor stopped.")
 
-    def connected(self) -> list[str]:
-        """Endpoint ids currently active, for the Controller's initial state."""
-        return sorted(self._active)
-
-    def _render_endpoints(self) -> list:
-        from pipemix.windows.wasapi.devices import list_outputs
-        return list_outputs()
-
     def _is_active(self, device_id: str) -> bool:
         try:
             dev = self._enumerator.GetDevice(device_id)
@@ -118,15 +94,13 @@ class DeviceMonitor:
             return device_id in self._active  # removed: trust what we knew
 
     def _drain(self) -> None:
-        # This thread owns the enumerator and the callback registration, so
-        # COM delivers notifications straight here with no message pump in the
-        # picture. It is also where the ids get resolved and where everything
-        # downstream (rebuilding legs) runs, which is all real COM work.
+        # This thread owns the enumerator and registration, so COM delivers here
+        # without a message pump; id resolution and leg rebuilds (COM work) run here too.
         comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
         try:
             try:
                 self._enumerator = AudioUtilities.GetDeviceEnumerator()
-                self._active = {d.id for d in self._render_endpoints()}
+                self._active = {d.id for d in list_outputs()}
                 self._client = _NotificationClient(self._queue.put)
                 self._enumerator.RegisterEndpointNotificationCallback(self._client)
             except Exception as e:
@@ -169,16 +143,3 @@ class DeviceMonitor:
             if self.on_disconnect:
                 self.on_disconnect(device_id)
 
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    comtypes.CoInitialize()
-    mon = DeviceMonitor()
-    mon.on_connect = lambda i: print("CONNECT   ", i)
-    mon.on_disconnect = lambda i: print("DISCONNECT", i)
-    mon.start()
-    print("Watching endpoints. Plug or unplug something; Ctrl-C to stop.")
-    try:
-        threading.Event().wait()
-    except KeyboardInterrupt:
-        mon.stop()

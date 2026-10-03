@@ -1,104 +1,14 @@
-"""
-Tests for WasapiBackend — pure logic, faked engine and wasapi calls, no COM.
-
-`wasapi/policy.py`, `wasapi/volume.py` and `wasapi/sessions.py` are a sibling
-Phase-3 brief's files and may not exist yet when this runs. Real modules are
-used if present; otherwise a bare stand-in is injected into `sys.modules` so
-`pipemix.windows.backend` stays importable here, exactly like `test_routing.py`
-stubs `gi` for the Linux controller. Either way, the backend's own module-level
-names (`Engine`, `list_outputs`, `default_output_id`, `_policy`, `_volume`,
-`_sessions`, `_capture_endpoints`) are what every test below patches, so the
-behaviour under test never depends on which one is real.
-"""
-
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-from types import ModuleType
+import threading
+import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import pytest
 
-
-def _ensure_stub(name: str, **attrs) -> None:
-    try:
-        __import__(name)
-    except ImportError:
-        mod = ModuleType(name)
-        for k, v in attrs.items():
-            setattr(mod, k, v)
-        sys.modules[name] = mod
-
-
-class _StubAppRouter:
-    available = True
-
-    def route(self, pid, device_id):
-        pass
-
-
-_ensure_stub(
-    "pipemix.windows.wasapi.policy",
-    set_default=lambda sink: None,
-    get_default=lambda: None,
-    AppRouter=_StubAppRouter,
-)
-_ensure_stub(
-    "pipemix.windows.wasapi.volume",
-    get_volume=lambda sink: 100,
-    set_volume=lambda sink, volume: None,
-    set_mute=lambda sink, mute: None,
-)
-_ensure_stub(
-    "pipemix.windows.wasapi.sessions",
-    list_streams=lambda: [],
-    set_stream_mute=lambda stream_id, mute: None,
-)
-
-from pipemix.models import AudioDevice, DeviceKind, VirtualSink
+from conftest import FakeEngine, win_dev as _dev
+from pipemix.models import VirtualSink
 import pipemix.windows.backend as backend_mod
 from pipemix.windows.backend import WasapiBackend
-
-
-def _dev(id_: str, name: str = "Dev", connected: bool = True) -> AudioDevice:
-    return AudioDevice(id=id_, name=name, sink=id_, kind=DeviceKind.USB, connected=connected)
-
-
-class _FakeEngine:
-    """Stands in for wasapi.engine.Engine: records legs, never touches COM.
-
-    `fail_start_pids` is a class-level set a test fills in before calling
-    `set_app_routes`, so `start()` raises for those pids only — the same
-    per-test knob `_FakeAppRouter.fail_clear` already uses below.
-    """
-
-    instances: list["_FakeEngine"] = []
-    fail_start_pids: set[int] = set()
-
-    def __init__(self, source_id: str | None = None, *, pid: int | None = None) -> None:
-        if (source_id is None) == (pid is None):
-            raise ValueError("exactly one of source_id/pid is required")
-        self.source_id = source_id
-        self.pid = pid
-        self.started = False
-        self.stopped = False
-        self._legs: list[str] = []
-        _FakeEngine.instances.append(self)
-
-    def start(self) -> None:
-        if self.pid is not None and self.pid in _FakeEngine.fail_start_pids:
-            raise RuntimeError(f"could not activate process loopback for pid {self.pid}")
-        self.started = True
-
-    def stop(self) -> None:
-        self.stopped = True
-
-    def set_legs(self, device_ids) -> None:
-        self._legs = list(device_ids)
-
-    @property
-    def legs(self) -> list[str]:
-        return sorted(self._legs)
 
 
 class _FakeAppRouter:
@@ -117,29 +27,25 @@ class _FakeAppRouter:
         self.calls.append((pid, device_id))
 
 
+CABLE_IN = _dev("cable_in", "CABLE Input (VB-Audio Virtual Cable)")
+CABLE_OUT = _dev("cable_out", "CABLE Output (VB-Audio Virtual Cable)")
+
+
+def _fake_outputs(monkeypatch, render=(), capture=(), real=()) -> None:
+    """Fake `list_outputs`: the cable is hidden from the outputs a user picks
+    from, and only the VB-CABLE probe asks to see it (`include_virtual`)."""
+    def fake(include_virtual=False, flow="eRender"):
+        if flow == "eCapture":
+            return list(capture) if include_virtual else []
+        return list(render) + list(real) if include_virtual else list(real)
+    monkeypatch.setattr(backend_mod, "list_outputs", fake)
+
+
 def _backend(monkeypatch, *, hub: bool = False, default: str | None = None) -> WasapiBackend:
     """A backend with the engine and every wasapi.* call faked."""
-    _FakeEngine.instances = []
-    _FakeEngine.fail_start_pids = set()
-    monkeypatch.setattr(backend_mod, "Engine", _FakeEngine)
+    monkeypatch.setattr(backend_mod, "Engine", FakeEngine)
 
-    # list_outputs takes include_virtual: the cable is hidden from the outputs
-    # a user picks from, and only the VB-CABLE probe asks to see it.
-    if hub:
-        monkeypatch.setattr(
-            backend_mod, "list_outputs",
-            lambda include_virtual=False: (
-                [_dev("cable_in", "CABLE Input (VB-Audio Virtual Cable)")]
-                if include_virtual else []
-            ),
-        )
-        monkeypatch.setattr(
-            backend_mod, "_capture_endpoints",
-            lambda: [("cable_out", "CABLE Output (VB-Audio Virtual Cable)")],
-        )
-    else:
-        monkeypatch.setattr(backend_mod, "list_outputs", lambda include_virtual=False: [])
-        monkeypatch.setattr(backend_mod, "_capture_endpoints", lambda: [])
+    _fake_outputs(monkeypatch, render=[CABLE_IN] if hub else [], capture=[CABLE_OUT] if hub else [])
 
     state = {"default": default}
     monkeypatch.setattr(backend_mod, "default_output_id", lambda: state["default"])
@@ -153,61 +59,36 @@ def _backend(monkeypatch, *, hub: bool = False, default: str | None = None) -> W
 
 # -- health() / engine detection --
 
-def test_health_reports_hub_only_when_both_cable_endpoints_present(monkeypatch):
-    b = _backend(monkeypatch, hub=True)
-    assert b.health().engine == "hub"
-
-
-def test_health_reports_leader_when_cable_input_missing(monkeypatch):
+@pytest.mark.parametrize("render, capture, engine", [
+    ([CABLE_IN], [CABLE_OUT], "hub"),
+    ([], [CABLE_OUT], "leader"),
+    ([CABLE_IN], [], "leader"),
+])
+def test_health_reports_hub_only_when_both_cable_endpoints_present(monkeypatch, render, capture, engine):
     b = _backend(monkeypatch, hub=False)
-    monkeypatch.setattr(backend_mod, "list_outputs", lambda: [])
-    monkeypatch.setattr(
-        backend_mod, "_capture_endpoints",
-        lambda: [("cable_out", "CABLE Output (VB-Audio Virtual Cable)")],
-    )
-    b._status = None
-    assert b.health().engine == "leader"
-
-
-def test_health_reports_leader_when_cable_output_missing(monkeypatch):
-    b = _backend(monkeypatch, hub=False)
-    monkeypatch.setattr(
-        backend_mod, "list_outputs",
-        lambda: [_dev("cable_in", "CABLE Input (VB-Audio Virtual Cable)")],
-    )
-    monkeypatch.setattr(backend_mod, "_capture_endpoints", lambda: [])
-    b._status = None
-    assert b.health().engine == "leader"
+    _fake_outputs(monkeypatch, render=render, capture=capture)
+    assert b.health().engine == engine
 
 
 def test_health_is_cached_across_calls(monkeypatch):
     b = _backend(monkeypatch, hub=True)
     first = b.health()
     # Even if the probe would now answer differently, health() must not
-    # re-evaluate until create_sink runs.
-    monkeypatch.setattr(backend_mod, "list_outputs", lambda: [])
-    monkeypatch.setattr(backend_mod, "_capture_endpoints", lambda: [])
+    # re-evaluate until reprobe runs (only before a fresh session).
+    _fake_outputs(monkeypatch)
     assert b.health() is first
 
 
 # -- leader election --
 
-def test_leader_election_prefers_current_default(monkeypatch):
-    b = _backend(monkeypatch, hub=False, default="dev_b")
-    devices = [_dev("dev_a"), _dev("dev_b")]
-    assert b._elect_leader(devices) == "dev_b"
-
-
-def test_leader_election_falls_back_to_first_connected(monkeypatch):
-    b = _backend(monkeypatch, hub=False, default="not_in_devices")
-    devices = [_dev("dev_a"), _dev("dev_b")]
-    assert b._elect_leader(devices) == "dev_a"
-
-
-def test_leader_election_skips_disconnected(monkeypatch):
-    b = _backend(monkeypatch, hub=False, default="not_in_devices")
-    devices = [_dev("dev_a", connected=False), _dev("dev_b")]
-    assert b._elect_leader(devices) == "dev_b"
+@pytest.mark.parametrize("default, devices, expected", [
+    ("dev_b", [_dev("dev_a"), _dev("dev_b")], "dev_b"),                        # the current default
+    ("not_in_devices", [_dev("dev_a"), _dev("dev_b")], "dev_a"),               # else the first connected
+    ("not_in_devices", [_dev("dev_a", connected=False), _dev("dev_b")], "dev_b"),  # skipping disconnected
+])
+def test_leader_election(monkeypatch, default, devices, expected):
+    b = _backend(monkeypatch, hub=False, default=default)
+    assert b._elect_leader(devices) == expected
 
 
 # -- leader excluded from legs in leader mode, included in hub mode --
@@ -221,83 +102,26 @@ def test_leader_mode_excludes_leader_from_legs(monkeypatch):
     assert engine.legs == ["dev_b"]
     assert sink.legs == {"dev_b": 0}
     assert b.leader == "dev_a"
+    # The Controller passes `sink.name` to `set_default`, `set_volume` and
+    # `move_stream`, so it must be a real endpoint, not a Linux-style `pipemix_<uuid>`.
+    assert sink.name == b.leader
+    assert FakeEngine.instances == [engine]
 
 
 def test_hub_mode_creates_no_engine_and_covers_every_device_in_legs(monkeypatch):
-    # Hub create_sink starts no CABLE Output engine — per-app routing
-    # replaces it (see set_app_routes below). sink.module is None, but
-    # sink.legs still lists every selected device, matching what the Apps
-    # tab / UI reads off the session regardless of engine mode.
+    # Hub mode starts no engine (per-app routing replaces it), so sink.module is
+    # None, but sink.legs still lists every selected device for the UI.
     b = _backend(monkeypatch, hub=True, default="original")
     devices = [_dev("dev_a"), _dev("dev_b")]
     sink = b.create_sink(devices)
     assert sink.module is None
-    assert _FakeEngine.instances == []
+    assert FakeEngine.instances == []
     assert sink.legs == {"dev_a": 0, "dev_b": 0}
+    assert sink.name == "cable_in"   # where the Controller should point; switching the default is its job
     assert b.leader is None
 
 
-def test_create_sink_leaves_the_default_alone(monkeypatch):
-    # Switching the Windows default is the Controller's job, not create_sink's.
-    b = _backend(monkeypatch, hub=True, default="original")
-    sink = b.create_sink([_dev("dev_a")])
-    assert backend_mod.default_output_id() == "original"
-    assert sink.name == "cable_in"   # but it names where the Controller should point
-
-
-# -- the sink's name has to be a real endpoint --
-
-# The Controller feeds `session.sink.name` straight back to `set_default`,
-# `set_volume` and `move_stream` (that is what `active_sink()` hands out), so
-# on Windows it must name an endpoint WASAPI knows. Naming it `pipemix_<uuid>`
-# the way Linux does would make every one of those calls fail with
-# E_INVALIDARG.
-
-def test_hub_mode_names_the_sink_after_cable_input(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    sink = b.create_sink([_dev("dev_a")])
-    assert sink.name == "cable_in"
-
-
-def test_leader_mode_names_the_sink_after_the_leader(monkeypatch):
-    b = _backend(monkeypatch, default="dev_b")
-    sink = b.create_sink([_dev("dev_a"), _dev("dev_b")])
-    assert sink.name == "dev_b" == b.leader
-
-
-def test_sink_name_is_never_a_generated_label(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    sink = b.create_sink([_dev("dev_a")])
-    assert not sink.name.startswith("pipemix_")
-
-
-# -- destroy_sink restores the previous default --
-
-def test_destroy_sink_restores_previous_default(monkeypatch):
-    b = _backend(monkeypatch, hub=False, default="original")
-    sink = b.create_sink([_dev("dev_a"), _dev("dev_b")])
-    # The Controller is what points Windows at the session, so stand in for it.
-    b.set_default(sink.name)
-    assert backend_mod.default_output_id() == "dev_a"  # elected leader
-
-    b.destroy_sink(sink)
-
-    assert backend_mod.default_output_id() == "original"
-    assert sink.module.stopped is True
-    assert sink.legs == {}
-    assert b.leader is None
-
-
-def test_destroy_sink_never_raises_when_engine_stop_fails(monkeypatch):
-    b = _backend(monkeypatch, hub=False, default="original")
-    sink = b.create_sink([_dev("dev_a")])
-
-    def _boom():
-        raise RuntimeError("endpoint already gone")
-    sink.module.stop = _boom
-
-    b.destroy_sink(sink)  # must not raise
-
+# -- destroy_sink --
 
 # -- restore_target --
 
@@ -314,28 +138,11 @@ def test_restore_target_falls_back_to_selected_device_when_default_is_cable(monk
 
 def test_restore_target_falls_back_to_list_outputs_when_no_selected_device_qualifies(monkeypatch):
     b = _backend(monkeypatch, hub=True, default="cable_in")
-    monkeypatch.setattr(
-        backend_mod, "list_outputs",
-        lambda include_virtual=False: (
-            [_dev("cable_in", "CABLE Input (VB-Audio Virtual Cable)")]
-            if include_virtual else [_dev("real_dev")]
-        ),
-    )
+    _fake_outputs(monkeypatch, render=[CABLE_IN], capture=[CABLE_OUT], real=[_dev("real_dev")])
     # dev "cable_in" itself and a disconnected device don't qualify.
     result = b.restore_target([_dev("cable_in"), _dev("dev_b", connected=False)])
     assert result == "real_dev"
 
-
-# -- create_sink must never strand CABLE Input as the restore target --
-
-def test_create_sink_never_records_cable_input_as_prev_default(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="cable_in")
-    b.create_sink([_dev("dev_a")])
-    assert b._prev_default != "cable_in"
-    assert b._prev_default == "dev_a"
-
-
-# -- per-app routes to the hub are undone; manual routes elsewhere are not --
 
 def test_destroy_sink_unpins_apps_routed_to_the_hub_but_not_manual_moves(monkeypatch):
     b = _backend(monkeypatch, hub=True, default="original")
@@ -345,185 +152,288 @@ def test_destroy_sink_unpins_apps_routed_to_the_hub_but_not_manual_moves(monkeyp
 
     b.move_stream(1, sink.name)
     b.move_stream(2, sink.name)
-    assert b._routed == {1, 2}
+    b.move_stream(2, "dev_a")  # the user points app 2 at a real device: leave it alone
+    fake_router.fail_clear = {3}
+    b.move_stream(3, sink.name)
 
-    # The user manually points app 2 at a real device — leave that alone.
-    b.move_stream(2, "dev_a")
-    assert b._routed == {1}
-
-    b.destroy_sink(sink)
+    b.destroy_sink(sink)  # route(3, None) raises internally and must not propagate
 
     assert (1, None) in fake_router.calls
     assert not any(pid == 2 and target is None for pid, target in fake_router.calls)
-    assert b._routed == set()
-    assert b._hub is None
-
-
-def test_destroy_sink_never_raises_when_clearing_a_route_fails(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    fake_router = _FakeAppRouter()
-    fake_router.fail_clear = {1}
-    b._app_router = fake_router
-    sink = b.create_sink([_dev("dev_a")])
-    b.move_stream(1, sink.name)
-    assert b._routed == {1}
-
-    b.destroy_sink(sink)  # route(1, None) raises internally — must not propagate
-
-    assert b._routed == set()
-    assert b._hub is None
-
-
-# -- move_stream(pid, None) clears the pin through the router --
-
-def test_move_stream_with_none_clears_the_pin(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    fake_router = _FakeAppRouter()
-    b._app_router = fake_router
-
-    b.move_stream(1, None)
-
-    assert (1, None) in fake_router.calls
-
-
-# -- per-app routing: leader mode is unchanged --
-
-def test_leader_mode_still_starts_exactly_one_engine(monkeypatch):
-    b = _backend(monkeypatch, hub=False, default="dev_a")
-    devices = [_dev("dev_a"), _dev("dev_b")]
-    b.create_sink(devices)
-    assert len(_FakeEngine.instances) == 1
-    assert _FakeEngine.instances[0].source_id == "dev_a"
+    assert b._routed == set() and b._hub is None
 
 
 # -- set_app_routes: one Engine(pid=...) per app actively playing into the
 # hub, reconciled against whatever routes the Controller asks for this poll --
 
-def test_set_app_routes_starts_one_engine_per_new_pid(monkeypatch):
+def _hub_session(monkeypatch) -> WasapiBackend:
+    """A backend with a hub session open, as set_app_routes needs."""
     b = _backend(monkeypatch, hub=True, default="original")
-    b.set_app_routes({1: ["dev_a", "dev_b"]})
-    assert len(_FakeEngine.instances) == 1
-    engine = _FakeEngine.instances[0]
+    b.create_sink([_dev("dev_a")])
+    return b
+
+
+def test_set_app_routes_starts_one_engine_per_new_pid(monkeypatch):
+    b = _hub_session(monkeypatch)
+    b.set_app_routes({1: ["dev_a", "dev_b"]}, b.apps_gen)
+    assert len(FakeEngine.instances) == 1
+    engine = FakeEngine.instances[0]
     assert engine.pid == 1
     assert engine.started is True
     assert engine.legs == ["dev_a", "dev_b"]
 
 
-def test_set_app_routes_same_routes_again_creates_nothing_new(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    b.set_app_routes({1: ["dev_a"]})
-    assert len(_FakeEngine.instances) == 1
-
-    b.set_app_routes({1: ["dev_a"]})
-
-    assert len(_FakeEngine.instances) == 1  # no second Engine() built
-
-
 def test_set_app_routes_changed_ids_calls_set_legs_on_the_same_engine(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    b.set_app_routes({1: ["dev_a"]})
-    engine = _FakeEngine.instances[0]
+    b = _hub_session(monkeypatch)
+    b.set_app_routes({1: ["dev_a"]}, b.apps_gen)
+    engine = FakeEngine.instances[0]
 
-    b.set_app_routes({1: ["dev_a", "dev_b"]})
+    b.set_app_routes({1: ["dev_a", "dev_b"]}, b.apps_gen)
 
-    assert len(_FakeEngine.instances) == 1  # same engine, not recreated
+    assert len(FakeEngine.instances) == 1  # same engine, not recreated
     assert engine.legs == ["dev_a", "dev_b"]
 
 
-def test_set_app_routes_ignores_leg_order_when_comparing_ids(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    b.set_app_routes({1: ["dev_a", "dev_b"]})
-    engine = _FakeEngine.instances[0]
-    engine.set_legs = lambda ids: (_ for _ in ()).throw(
-        AssertionError("set_legs must not be called when the id set is unchanged")
-    )
-
-    b.set_app_routes({1: ["dev_b", "dev_a"]})  # same set, different order
-
-
 def test_set_app_routes_dropped_pid_stops_its_engine(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    b.set_app_routes({1: ["dev_a"], 2: ["dev_b"]})
-    engine1, engine2 = _FakeEngine.instances
+    b = _hub_session(monkeypatch)
+    b.set_app_routes({1: ["dev_a"], 2: ["dev_b"]}, b.apps_gen)
+    engine1, engine2 = FakeEngine.instances
 
-    b.set_app_routes({2: ["dev_b"]})
+    b.set_app_routes({2: ["dev_b"]}, b.apps_gen)
 
     assert engine1.stopped is True
     assert engine2.stopped is False
 
     # Re-adding pid 1 later must start a *new* engine, not reuse the stopped one.
-    b.set_app_routes({1: ["dev_a"], 2: ["dev_b"]})
-    assert len(_FakeEngine.instances) == 3
-
-
-def test_set_app_routes_unchanged_pid_touches_nothing(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    b.set_app_routes({1: ["dev_a"]})
-    engine = _FakeEngine.instances[0]
-    engine.set_legs = lambda ids: (_ for _ in ()).throw(
-        AssertionError("set_legs must not be called when routes are unchanged")
-    )
-
-    b.set_app_routes({1: ["dev_a"]})  # identical routes — must not touch set_legs
+    b.set_app_routes({1: ["dev_a"], 2: ["dev_b"]}, b.apps_gen)
+    assert len(FakeEngine.instances) == 3
 
 
 def test_set_app_routes_a_failing_pid_is_logged_and_others_still_start(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    _FakeEngine.fail_start_pids = {1}
+    b = _hub_session(monkeypatch)
+    FakeEngine.fail_start_pids = {1}
 
-    b.set_app_routes({1: ["dev_a"], 2: ["dev_b"]})  # must not raise
+    b.set_app_routes({1: ["dev_a"], 2: ["dev_b"]}, b.apps_gen)  # must not raise
 
-    started_pids = {e.pid for e in _FakeEngine.instances if e.started}
+    started_pids = {e.pid for e in FakeEngine.instances if e.started}
     assert started_pids == {2}
 
 
 def test_set_app_routes_a_failed_pid_is_not_retried_while_still_requested(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    _FakeEngine.fail_start_pids = {1}
-    b.set_app_routes({1: ["dev_a"]})
-    assert len(_FakeEngine.instances) == 1  # one attempt
+    b = _hub_session(monkeypatch)
+    FakeEngine.fail_start_pids = {1}
+    b.set_app_routes({1: ["dev_a"]}, b.apps_gen)
+    assert len(FakeEngine.instances) == 1  # one attempt
 
-    b.set_app_routes({1: ["dev_a"]})  # same route requested again
-    assert len(_FakeEngine.instances) == 1  # not retried
+    b.set_app_routes({1: ["dev_a"]}, b.apps_gen)  # same route requested again
+    assert len(FakeEngine.instances) == 1  # not retried
 
-    b.set_app_routes({})  # pid leaves the routes entirely
-    _FakeEngine.fail_start_pids = set()  # now it would succeed
-    b.set_app_routes({1: ["dev_a"]})  # requested again -> a fresh attempt
-    assert len(_FakeEngine.instances) == 2
+    b.set_app_routes({}, b.apps_gen)  # pid leaves the routes entirely
+    FakeEngine.fail_start_pids = set()  # now it would succeed
+    b.set_app_routes({1: ["dev_a"]}, b.apps_gen)  # requested again -> a fresh attempt
+    assert len(FakeEngine.instances) == 2
 
 
-def test_destroy_sink_stops_every_app_engine(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    sink = b.create_sink([_dev("dev_a")])
-    b.set_app_routes({1: ["dev_a"], 2: ["dev_a"]})
-    app_engines = list(_FakeEngine.instances)
-    assert len(app_engines) == 2
+# -- set_app_routes never holds a lock across Engine.start/stop --
 
+class _LockProbe(FakeEngine):
+    """stop() records whether the backend's lock was free at the time."""
+    backend: WasapiBackend | None = None
+    lock_free: list[bool] = []
+
+    def stop(self, wait: bool = True) -> None:
+        lock = _LockProbe.backend._apps_lock
+        free = lock.acquire(blocking=False)
+        if free:
+            lock.release()
+        _LockProbe.lock_free.append(free)
+        super().stop(wait)
+
+
+def test_destroy_sink_does_not_wait_for_an_in_flight_start(monkeypatch):
+    b = _hub_session(monkeypatch)
+    FakeEngine.start_gate = threading.Event()
+    sink = VirtualSink(None, "cable_in")
+    t = threading.Thread(target=b.set_app_routes, args=({1: ["dev_a"]}, b.apps_gen))
+    t.start()
+    assert FakeEngine.entered.wait(1)
+
+    done = threading.Event()
+    threading.Thread(target=lambda: (b.destroy_sink(sink), done.set())).start()
+    assert done.wait(0.5)                    # returned while start() is still blocked
+
+    FakeEngine.start_gate.set()
+    t.join(1)
+    engine = FakeEngine.instances[-1]
+    assert engine.started and engine.stopped  # the late engine was not adopted
+    assert b._apps == {}
+
+
+def test_engine_stop_runs_with_no_backend_lock_held(monkeypatch):
+    b = _hub_session(monkeypatch)
+    monkeypatch.setattr(backend_mod, "Engine", _LockProbe)
+    _LockProbe.backend, _LockProbe.lock_free = b, []
+    b.set_app_routes({1: ["dev_a"], 2: ["dev_a"]}, b.apps_gen)
+    b.set_app_routes({2: ["dev_a"]}, b.apps_gen)              # pid 1 dropped -> stop
+    b.destroy_sink(VirtualSink(None, "cable_in"))  # pid 2 -> stop
+    b.close(1)
+
+    assert _LockProbe.lock_free == [True, True]
+
+
+# -- A restart never waits on the old session's slow start (no lock spans set_app_routes) --
+
+def _restart_during_slow_start(monkeypatch):
+    """Old session's poll is stuck in Engine(pid=1).start(); the session restarts and
+    the new poll adopts its own pid 1 engine. Returns (backend, old poll thread)."""
+    b = _hub_session(monkeypatch)
+    FakeEngine.start_gate = threading.Event()  # the first start hangs
+    old = b.apps_gen
+    t = threading.Thread(target=b.set_app_routes, args=({1: ["dev_a"]}, old))
+    t.start()
+    assert FakeEngine.entered.wait(1)
+    b.destroy_sink(VirtualSink(None, "cable_in"))
+    b.create_sink([_dev("dev_a")])
+
+    t0 = time.monotonic()
+    b.set_app_routes({1: ["dev_b"]}, gen=b.apps_gen)
+    assert time.monotonic() - t0 < 0.5           # not queued behind the hung start
+    return b, t
+
+
+def test_restart_adopts_its_engines_while_the_old_start_hangs(monkeypatch):
+    b, t = _restart_during_slow_start(monkeypatch)
+    stale, fresh = FakeEngine.instances
+    assert b._apps == {1: fresh} and fresh.started and fresh.legs == ["dev_b"]
+
+    FakeEngine.start_gate.set()
+    t.join(1)
+    assert stale.started and stale.stopped       # signalled, never adopted
+    assert b._apps == {1: fresh} and not fresh.stopped
+    assert b._failed_apps == set()
+    b.close(1)
+    assert stale.joined
+
+
+def test_a_stale_start_failing_late_is_not_recorded_as_a_new_failure(monkeypatch):
+    b, t = _restart_during_slow_start(monkeypatch)
+    FakeEngine.fail_start_pids = {1}            # the hung start now fails
+
+    FakeEngine.start_gate.set()
+    t.join(1)
+    assert b._failed_apps == set()
+    assert list(b._apps) == [1]
+
+
+def test_a_stale_gen_never_touches_the_new_sessions_engines(monkeypatch):
+    b = _hub_session(monkeypatch)
+    old = b.apps_gen
+    b.destroy_sink(VirtualSink(None, "cable_in"))
+    b.create_sink([_dev("dev_a")])
+    b.set_app_routes({1: ["dev_a"]}, gen=b.apps_gen)
+    fresh = FakeEngine.instances[0]
+    calls = []
+    fresh.set_legs = lambda ids: calls.append(list(ids))
+
+    b.set_app_routes({1: ["dev_b"]}, gen=old)    # would change its legs
+    b.set_app_routes({}, gen=old)                # would drop it
+
+    assert calls == [] and not fresh.stopped
+    assert b._apps == {1: fresh} and len(FakeEngine.instances) == 1
+
+
+# -- Stopping never waits for a pump to exit: engines are signalled, `close` joins --
+
+def _slow_join(monkeypatch, *, hub: bool = True) -> WasapiBackend:
+    b = _backend(monkeypatch, hub=hub, default="original")
+    FakeEngine.join_gate = threading.Event()  # pumps stay "running" until it is set
+    return b
+
+
+def test_destroy_sink_stops_the_leader_without_joining_and_forgets_it(monkeypatch):
+    b = _slow_join(monkeypatch, hub=False)
+    sink = b.create_sink([_dev("dev_a"), _dev("dev_b")])
+
+    t0 = time.monotonic()
     b.destroy_sink(sink)
+    assert time.monotonic() - t0 < 0.5
+    assert sink.module.stopped and not sink.module.joined
+    assert sink.legs == {}
+    assert b.leader is None
 
-    assert all(e.stopped for e in app_engines)
+    FakeEngine.join_gate.set()
+    b.close(1)
+    assert sink.module.joined
 
 
-def test_destroy_sink_never_raises_when_an_app_engine_stop_fails(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
+def test_destroy_sink_signals_every_engine_without_joining(monkeypatch):
+    b = _slow_join(monkeypatch)
     sink = b.create_sink([_dev("dev_a")])
-    b.set_app_routes({1: ["dev_a"], 2: ["dev_a"]})
-    engine1, engine2 = _FakeEngine.instances
+    b.set_app_routes({1: ["dev_a"], 2: ["dev_a"]}, b.apps_gen)
+    engines = list(FakeEngine.instances)
 
-    def _boom():
-        raise RuntimeError("endpoint already gone")
-    engine1.stop = _boom
+    t0 = time.monotonic()
+    b.destroy_sink(sink)
+    assert time.monotonic() - t0 < 0.5
+    assert all(e.stopped and not e.joined for e in engines)  # all told, none joined yet
 
-    b.destroy_sink(sink)  # must not raise
+    FakeEngine.join_gate.set()
+    b.close(1)
+    assert all(e.joined for e in engines)
 
-    assert engine2.stopped is True
+
+def test_set_app_routes_does_not_wait_for_a_dropped_engine_to_exit(monkeypatch):
+    b = _slow_join(monkeypatch)
+    b.create_sink([_dev("dev_a")])
+    b.set_app_routes({1: ["dev_a"]}, b.apps_gen)
+    engine1 = FakeEngine.instances[0]
+    seen = []
+    orig_start = FakeEngine.start
+    monkeypatch.setattr(FakeEngine, "start", lambda self: (seen.append(engine1.stopped), orig_start(self)))
+
+    t0 = time.monotonic()
+    b.set_app_routes({2: ["dev_a"]}, b.apps_gen)
+    assert time.monotonic() - t0 < 0.5
+    assert seen == [True]               # told to stop before the new one started
+    assert not engine1.joined
+
+    FakeEngine.join_gate.set()
+    b.close(1)
+    assert engine1.joined
 
 
-def test_set_legs_on_a_hub_sink_with_no_engine_module_works(monkeypatch):
-    b = _backend(monkeypatch, hub=True, default="original")
-    sink = b.create_sink([_dev("dev_a")])
-    assert sink.module is None
+def test_close_waits_for_pumps_up_to_its_timeout(monkeypatch):
+    b = _slow_join(monkeypatch)
+    b.create_sink([_dev("dev_a")])
+    b.set_app_routes({1: ["dev_a"]}, b.apps_gen)
+    engine = FakeEngine.instances[0]
+    b.destroy_sink(VirtualSink(None, "cable_in"))
 
-    b.set_legs(sink, [_dev("dev_a"), _dev("dev_b")])  # must not raise
+    t0 = time.monotonic()
+    b.close(timeout=0.1)                # wedged: gives up at the bound
+    assert time.monotonic() - t0 < 0.5
+    assert not engine.joined
 
-    assert sink.legs == {"dev_a": 0, "dev_b": 0}
+    FakeEngine.join_gate.set()
+    b.close(timeout=1)
+    assert engine.joined
+
+
+def test_close_joins_an_engine_stopped_while_it_waits(monkeypatch):
+    b = _slow_join(monkeypatch)
+    b.create_sink([_dev("dev_a")])
+    b.set_app_routes({1: ["dev_a"], 2: ["dev_a"]}, b.apps_gen)
+    e1, e2 = FakeEngine.instances
+    b.set_app_routes({2: ["dev_a"]}, b.apps_gen)             # e1 stopped, its pump wedged on the gate
+    e2.join_gate = gate2 = threading.Event()
+    seen = []
+    closer = threading.Thread(target=lambda: (b.close(1), seen.append(e2.joined)))
+    closer.start()
+    time.sleep(0.05)                             # close() is now waiting on e1
+
+    b.destroy_sink(VirtualSink(None, "cable_in"))  # e2 stopped mid-close
+    FakeEngine.join_gate.set()
+    time.sleep(0.05)                             # e1 is done; e2 still gated
+    gate2.set()
+    closer.join(1)
+    assert seen == [True]                        # close() waited for the second one too

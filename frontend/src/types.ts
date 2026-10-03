@@ -1,4 +1,4 @@
-// Hand-mirrored from src/pipemix/models.py and services/backend/__init__.py.
+// Hand-mirrored from src/pipemix/models.py.
 // Enums cross the bridge as their .value string (bridge.to_json).
 
 export type DeviceKind = "bluetooth" | "usb" | "hdmi" | "builtin" | "unknown";
@@ -19,7 +19,6 @@ export interface AudioDevice {
   sink: string | null; // null while known but disconnected
   kind: DeviceKind;
   connected: boolean;
-  battery: number | null;
   volume: number;
   // Added by Api.devices_payload, not on the dataclass.
   selected: boolean;
@@ -30,8 +29,7 @@ export interface AudioDevice {
 export interface BackendStatus {
   health: BackendHealth;
   message: string;
-  // "native" | "hub" | "leader" — set by WasapiBackend.health(); absent only
-  // from App.tsx's placeholder state before the first snapshot lands.
+  // "native" | "hub" | "leader"; absent only in App.tsx's pre-snapshot placeholder.
   engine?: string;
 }
 

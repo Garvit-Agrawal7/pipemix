@@ -1,9 +1,3 @@
-"""
-PipeMix — Controller signals to the web page.
-
-Four signals, one direction. Everything the other way goes through Api.
-"""
-
 from __future__ import annotations
 
 import json
@@ -16,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pipemix.linux.controller import Controller
-    from pipemix.linux.ui.api import Api
+    from pipemix.api import Api
 
 log = logging.getLogger(__name__)
 
@@ -27,10 +21,6 @@ def to_json(obj: Any) -> Any:
         return obj.value
     if is_dataclass(obj) and not isinstance(obj, type):
         return {k: to_json(v) for k, v in asdict(obj).items()}
-    if isinstance(obj, (list, tuple)):
-        return [to_json(v) for v in obj]
-    if isinstance(obj, dict):
-        return {k: to_json(v) for k, v in obj.items()}
     return obj
 
 
@@ -54,12 +44,9 @@ class Bridge:
         """
         Deliver pushes off the main thread, one at a time and in order.
 
-        pywebview's evaluate_js queues the script with glib.idle_add and then
-        blocks on a semaphore until the result comes back. Called from the GTK
-        main thread that is a guaranteed deadlock: the idle callback it is
-        waiting for cannot run, because the thread that would run it is the one
-        blocked. BlueZ connect and disconnect handlers fire on exactly that
-        thread, so every push has to be handed to a worker instead.
+        evaluate_js queues work with glib.idle_add and blocks until it runs, so
+        calling it from the GTK main thread deadlocks. BlueZ handlers fire on that
+        thread, so every push goes through a worker.
         """
         while True:
             script = self._queue.get()
@@ -82,8 +69,8 @@ class Bridge:
             f"window.pipemix && window.pipemix.push({json.dumps(event)}, {json.dumps(payload)})"
         )
 
-    def _on_devices(self, _controller, devices) -> None:
-        self._push("devices", self.api._devices_payload(devices))
+    def _on_devices(self, _controller, _devices) -> None:
+        self._push("devices", self.api._devices_payload())
 
     def _on_state(self, controller, state) -> None:
         # Signals fire synchronously on the emitting thread, so the sink read

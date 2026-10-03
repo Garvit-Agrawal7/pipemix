@@ -1,44 +1,56 @@
-"""Device names and presets.
-
-Linux stores config at ~/.config/pipemix/config.json; Windows at
-%APPDATA%\\PipeMix\\config.json. `default_log_dir` resolves the matching log
-directory for `main.py` on each platform.
-"""
-
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import sys
+import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 
-def _default_config_path() -> Path:
+def _default_path() -> Path:
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
         return Path(appdata) / "PipeMix" / "config.json"
     return Path.home() / ".config" / "pipemix" / "config.json"
 
 
-def default_log_dir() -> Path:
-    """Where `main.py` should put its rotating log file."""
+def _default_log_dir() -> Path:
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
         return Path(local_appdata) / "PipeMix" / "logs"
     return Path.home() / ".local" / "share" / "pipemix"
 
 
+def setup_logging(debug: bool) -> None:
+    """Rotating file in the per-user log dir, plus the console."""
+    log_dir = _default_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    to_file = RotatingFileHandler(log_dir / "pipemix.log", maxBytes=5_000_000, backupCount=3)
+    to_file.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)-7s] %(name)-25s %(message)s"
+    ))
+
+    to_console = logging.StreamHandler(sys.stdout)
+    to_console.setFormatter(logging.Formatter(
+        "[%(asctime)s] %(levelname)-5s: %(message)s", datefmt="%H:%M:%S"
+    ))
+
+    root = logging.getLogger()
+    root.addHandler(to_file)
+    root.addHandler(to_console)
+    root.setLevel(logging.DEBUG if debug else logging.INFO)
+
+
 class ConfigManager:
 
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or _default_config_path()
-        self.data: dict = {
-            "devices": {}, "presets": {}, "last_preset": None, "prev_default": None,
-            "pinned_apps": [],
-        }
+        self.path = path or _default_path()
         self.load()
 
     def load(self) -> None:
@@ -73,8 +85,28 @@ class ConfigManager:
     def device_name(self, device_id: str, default: str) -> str:
         return self.data["devices"].get(device_id, default)
 
-    def save_preset(self, preset_id: str, name: str, devices: list[str]) -> None:
+    @property
+    def presets(self) -> dict:
+        return self.data["presets"]
+
+    @property
+    def last_preset(self) -> str | None:
+        return self.data["last_preset"]
+
+    @last_preset.setter
+    def last_preset(self, preset_id: str | None) -> None:
+        self.data["last_preset"] = preset_id
+        self.save()
+
+    def save_preset(self, name: str, devices: list[str]) -> str:
+        preset_id = re.sub(r"[^a-z0-9_]", "", name.lower().replace(" ", "_"))
+        if not preset_id:
+            preset_id = f"preset_{int(time.time())}"
         self.data["presets"][preset_id] = {"name": name, "devices": devices}
+        self.save()
+        log.info("Saved preset '%s' (%s): %s", name, preset_id, devices)
+        return preset_id
 
     def delete_preset(self, preset_id: str) -> None:
         self.data["presets"].pop(preset_id, None)
+        self.save()

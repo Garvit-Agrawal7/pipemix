@@ -1,10 +1,3 @@
-"""
-PipeMix — the pactl backend.
-
-Talks to PipeWire through its PulseAudio compatibility layer. Every pactl call
-in the app goes through here; the Controller and UI never shell out themselves.
-"""
-
 from __future__ import annotations
 
 import json
@@ -15,15 +8,13 @@ import time
 from typing import Callable
 
 from pipemix.models import AudioDevice, DeviceKind, VirtualSink, sink_to_mac
-from pipemix.linux.services.backend import BackendError, BackendHealth, BackendStatus
+from pipemix.models import BackendError, BackendHealth, BackendStatus
 
 log = logging.getLogger(__name__)
 
-# Margin over the slowest device. Every leg gets this plus the
-# slowest device's latency; PipeWire subtracts each device's own latency from
-# latency_msec, so all outputs land together. The ring is a fixed delay line, not
-# a jitter buffer: this only has to cover one quantum (pinned to 1024 = 21.3 ms)
-# plus slack, so raising it buys nothing against Bluetooth hiccups.
+# Margin every leg gets over the slowest device's latency (PipeWire subtracts each
+# device's own). The ring is a delay line, not a jitter buffer: this only covers one
+# quantum (pinned 1024 = 21.3 ms) plus slack; raising it won't help Bluetooth hiccups.
 # ponytail: a clock.force-quantum above ~1440 (30 ms) empties the slowest leg's ring and it
 # plays late; raise this past that quantum if anyone forces one.
 LOOPBACK_LATENCY_MS = 30
@@ -71,9 +62,8 @@ def _event_kind(line: str) -> str | None:
     """
     Classify one `pactl subscribe` line, or None to ignore it.
 
-    Every pactl call this app makes shows up here too, as a client event —
-    ignored, or watch() would retrigger itself forever. Sink volume changes
-    are also ignored; only a sink appearing or disappearing means hotplug.
+    Client events (our own pactl calls) are ignored or watch() would retrigger
+    forever; so are volume changes. Only a sink appearing or leaving is hotplug.
     """
     if " on sink-input #" in line:
         return "streams"
@@ -182,7 +172,7 @@ class PactlBackend:
             chan = next(iter(s.get("volume", {}).values()), None)
             devices.append(AudioDevice(
                 id=sink_to_mac(sink) or sink,
-                name=s.get("description") or self._fallback_name(sink, kind),
+                name=s.get("description") or sink,
                 sink=sink,
                 kind=kind,
                 connected=True,
@@ -191,16 +181,6 @@ class PactlBackend:
 
         log.info("Found %d output(s)", len(devices))
         return devices
-
-    def _fallback_name(self, sink: str, kind: DeviceKind) -> str:
-        if kind == DeviceKind.BLUETOOTH:
-            mac = sink_to_mac(sink)
-            return f"Bluetooth Device ({mac})" if mac else "Bluetooth Device"
-        if kind == DeviceKind.HDMI:
-            return "HDMI Output"
-        if kind == DeviceKind.USB:
-            return "USB Audio Device"
-        return "Built-in Audio"
 
     def _latencies(self) -> dict[str, int]:
         """{sink name: ns the device adds, its latency offset included}. Empty on failure."""
@@ -307,11 +287,9 @@ class PactlBackend:
         """
         A hub sink for the session, with one loopback out to each chosen output.
 
-        Not module-combine-sink: its slave list is fixed at load time, so every
-        toggle meant destroying and rebuilding it, and under that churn it
-        silently stops attaching one of the slaves — a live sink that is deaf on
-        one device. Loopbacks are independent, so a toggle adds or drops exactly
-        one of them and leaves the rest playing.
+        Not module-combine-sink: its slave list is fixed at load, and under toggle
+        churn it silently stops feeding one slave. Independent loopbacks let a
+        toggle add or drop exactly one leg.
         """
         if not any(d.sink for d in devices):
             raise BackendError(
@@ -418,9 +396,8 @@ class PactlBackend:
 
         orphans = []
         for line in out.splitlines():
-            # The hub carries its own name; each loopback carries it too, in the
-            # media.name we stamp on them. One scan over the whole line catches
-            # both, and skips the continuation lines of multi-line module args.
+            # The hub and each loopback (via media.name) carry the name: one scan per
+            # line catches both and skips multi-line module-arg continuations.
             found = re.search(r"pipemix_[0-9a-f]+", line)
             if not found:
                 continue

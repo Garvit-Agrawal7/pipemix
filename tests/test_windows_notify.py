@@ -1,32 +1,12 @@
-"""Which thread the endpoint notifications get registered on.
-
-No COM — `pycaw` and `comtypes` are stubbed — because the thing worth pinning
-here is not what WASAPI does, it is which apartment we ask it from.
-
-`comtypes.CoInitialize()` puts the calling thread in a single-threaded
-apartment, and COM delivers calls to an object registered from an STA only
-while that thread pumps a Windows message loop. `main.py --cli` blocks on
-`threading.Event().wait()` and never pumps, so registering on the caller's
-thread meant hotplug notifications were queued and never delivered: a headset
-could disconnect mid-session and nothing noticed. Registration therefore has
-to happen on the monitor's own MTA worker, and this test fails if it moves
-back.
-
-The stubs go in through `monkeypatch.setitem`, so they are torn down again —
-a fake `comtypes` left in `sys.modules` breaks every other test in the run.
-"""
-
 from __future__ import annotations
 
 import importlib
 import sys
 import threading
-from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 NOTIFY = "pipemix.windows.wasapi.notify"
 
@@ -83,7 +63,7 @@ def monitor_with_log(monkeypatch):
     monkeypatch.delitem(sys.modules, NOTIFY, raising=False)
 
     notify = importlib.import_module(NOTIFY)
-    monkeypatch.setattr(notify.DeviceMonitor, "_render_endpoints", lambda self: [])
+    monkeypatch.setattr(notify, "list_outputs", lambda: [])
     yield notify.DeviceMonitor(), log
 
     # The imported module has the stubs bound into it; drop it so anything
@@ -91,7 +71,7 @@ def monitor_with_log(monkeypatch):
     sys.modules.pop(NOTIFY, None)
 
 
-def test_registration_happens_off_the_calling_thread(monitor_with_log):
+def test_registers_and_unregisters_off_the_calling_thread_in_one_apartment(monitor_with_log):
     monitor, log = monitor_with_log
     caller = threading.current_thread().name
 
@@ -99,27 +79,18 @@ def test_registration_happens_off_the_calling_thread(monitor_with_log):
     monitor.stop()
 
     registered_on = [entry[1] for entry in log if entry[0] == "register"]
-    entered_apartment_on = [entry[1] for entry in log if entry[0] == "coinit"]
+    coinit_on = [entry[1] for entry in log if entry[0] == "coinit"]
+    unregistered_on = [entry[1] for entry in log if entry[0] == "unregister"]
 
     assert registered_on, f"never registered; log={log}"
     assert caller not in registered_on, (
         f"registered on the calling thread {caller!r} — COM marshals "
         f"notifications back to an STA that never pumps a message loop"
     )
-    assert entered_apartment_on, f"worker never entered an apartment; log={log}"
-    assert entered_apartment_on[0] == registered_on[0], (
+    assert coinit_on, f"worker never entered an apartment; log={log}"
+    assert coinit_on[0] == registered_on[0], (
         "the thread that registered is not the one that entered the apartment"
     )
+    # COM requires it, and getting this wrong leaks the callback for the life of the process.
+    assert unregistered_on == registered_on, f"unregistered on another thread; log={log}"
 
-
-def test_unregisters_on_the_same_thread_it_registered_on(monitor_with_log):
-    # COM requires it, and getting this wrong leaks the callback for the life
-    # of the process.
-    monitor, log = monitor_with_log
-    monitor.start()
-    monitor.stop()
-
-    registered_on = [entry[1] for entry in log if entry[0] == "register"]
-    unregistered_on = [entry[1] for entry in log if entry[0] == "unregister"]
-    assert unregistered_on, f"never unregistered; log={log}"
-    assert unregistered_on == registered_on
