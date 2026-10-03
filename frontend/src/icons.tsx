@@ -125,13 +125,6 @@ export const IconTrash = ({ size = 14 }: P) => (
   </svg>
 );
 
-export const IconRefresh = ({ size = 13 }: P) => (
-  <svg width={size} height={size} {...sm} strokeWidth={1.8}>
-    <path d="M10 3.2a6.8 6.8 0 1 1-6.2 4" />
-    <path d="M3.4 3.4v3.6h3.6" />
-  </svg>
-);
-
 export const IconSignal = ({ size = 19 }: P) => (
   <svg width={size} height={size} {...base} strokeWidth={1.7}>
     <path d="M3 9.5a13 13 0 0 1 18 0" />

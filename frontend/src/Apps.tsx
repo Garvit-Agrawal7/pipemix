@@ -6,7 +6,6 @@ import type { AudioDevice, SessionState, Stream } from "./types";
 import {
   IconChevron,
   IconMuted,
-  IconRefresh,
   IconSplit,
   IconVolume,
   IconWave,
@@ -69,10 +68,7 @@ export default function Apps(props: AppsProps) {
     <>
       <div className="head">
         <h1 className="h1">Apps</h1>
-        <p className="sub">
-          {streams.length} playing · anything you route by hand stays put when
-          outputs change
-        </p>
+        <p className="sub">{streams.length} playing</p>
       </div>
 
       <div className="list">
@@ -178,11 +174,6 @@ export default function Apps(props: AppsProps) {
             );
           })
         )}
-
-        <div className="note">
-          <IconRefresh />
-          Updates live.
-        </div>
       </div>
 
       <Foot
