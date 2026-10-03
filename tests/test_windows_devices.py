@@ -2,47 +2,37 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pipemix.models import DeviceKind
 from pipemix.windows.wasapi.devices import FORM_FACTOR_DIGITAL_DISPLAY, device_kind, is_virtual
 
 
-def test_bus_wins_over_form_factor():
-    # A Bluetooth headset reports form factor Headphones/Headset, but the bus
-    # is what the UI groups by.
-    assert device_kind("BTHENUM", 4) is DeviceKind.BLUETOOTH
-    assert device_kind("BTHHFENUM", 3) is DeviceKind.BLUETOOTH
-    assert device_kind("USB", 1) is DeviceKind.USB
-
-
-def test_hdmi_and_builtin_share_a_bus():
-    assert device_kind("HDAUDIO", FORM_FACTOR_DIGITAL_DISPLAY) is DeviceKind.HDMI
-    assert device_kind("HDAUDIO", 1) is DeviceKind.BUILTIN
-
-
-def test_unknown_is_not_a_crash():
-    assert device_kind(None, None) is DeviceKind.UNKNOWN
-    assert device_kind("SWD", 0) is DeviceKind.UNKNOWN
-
-
-def test_enumerator_case_does_not_matter():
-    assert device_kind("bthenum", None) is DeviceKind.BLUETOOTH
+@pytest.mark.parametrize("enumerator, form_factor, kind", [
+    # A Bluetooth headset reports form factor Headphones/Headset, but the bus is what the UI groups by.
+    ("BTHENUM", 4, DeviceKind.BLUETOOTH),
+    ("BTHHFENUM", 3, DeviceKind.BLUETOOTH),
+    ("USB", 1, DeviceKind.USB),
+    # HDMI and built-in share a bus.
+    ("HDAUDIO", FORM_FACTOR_DIGITAL_DISPLAY, DeviceKind.HDMI),
+    ("HDAUDIO", 1, DeviceKind.BUILTIN),
+    # Unknown is not a crash; enumerator case does not matter.
+    (None, None, DeviceKind.UNKNOWN),
+    ("SWD", 0, DeviceKind.UNKNOWN),
+    ("bthenum", None, DeviceKind.BLUETOOTH),
+])
+def test_device_kind(enumerator, form_factor, kind):
+    assert device_kind(enumerator, form_factor) is kind
 
 
 # Virtual endpoints are inaudible, and in hub mode "CABLE Input" is our own plumbing:
 # offering it would loop the engine into its own source (as PactlBackend's node.virtual).
-
-def test_root_enumerated_devices_are_virtual():
-    assert is_virtual("ROOT") is True
-    assert is_virtual("root") is True
-
-
-def test_real_hardware_is_never_virtual():
-    for enumerator in ("HDAUDIO", "USB", "BTHENUM", "BTHHFENUM", "PCI"):
-        assert is_virtual(enumerator) is False, enumerator
-
-
-def test_unknown_enumerator_is_not_assumed_virtual():
-    # Hiding an output we simply failed to classify would be worse than
-    # showing a virtual one: the user loses a device they can actually hear.
-    assert is_virtual(None) is False
-    assert is_virtual("") is False
+# An unclassified enumerator is not assumed virtual: hiding an output we failed to
+# classify would cost the user a device they can actually hear.
+@pytest.mark.parametrize("enumerator, virtual", [
+    ("ROOT", True), ("root", True),
+    ("HDAUDIO", False), ("USB", False), ("BTHENUM", False), ("BTHHFENUM", False), ("PCI", False),
+    (None, False), ("", False),
+])
+def test_is_virtual(enumerator, virtual):
+    assert is_virtual(enumerator) is virtual

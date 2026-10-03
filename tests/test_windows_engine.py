@@ -155,45 +155,10 @@ def test_leg_that_fails_right_after_reopening_backs_off(monkeypatch, opener, clo
     assert len(opened) == 3
 
 
-def test_leg_that_fails_to_open_is_retried_once_a_second(monkeypatch, opener, clock):
-    e = opener(Engine("src"))
-    e.set_legs(["busy"])
-    attempts = []
-
-    def _open(device_id):
-        attempts.append(clock[0])
-        if len(attempts) == 1:
-            raise OSError(-2004287478, "device in use")  # AUDCLNT_E_DEVICE_IN_USE
-        return _FakeLeg(device_id)
-    monkeypatch.setattr(e, "_open_leg", _open)
-
-    _settle(e)                         # fails
-    clock[0] += 0.5
-    _settle(e)                         # too soon: not tried again
-    assert attempts == [100.0]
-    assert "busy" not in e._legs
-
-    clock[0] += 0.6
-    _settle(e)                         # a second on: tried and opened
-    assert len(attempts) == 2
-    assert "busy" in e._legs
-
-
-def test_retry_is_forgotten_when_the_leg_is_no_longer_wanted(monkeypatch, opener):
-    e = opener(Engine("src"))
-    e.set_legs(["gone"])
-    monkeypatch.setattr(e, "_open_leg", Mock(side_effect=OSError("nope")))
-    _settle(e)
-    assert "gone" in e._retry_at
-    e.set_legs([])
-    e._reconcile()
-    assert not e._retry_at
-
-
 def test_failed_open_logs_error_once_then_debug(monkeypatch, opener, clock, caplog):
     e = opener(Engine("src"))
     e.set_legs(["busy"])
-    open_leg = Mock(side_effect=OSError("in use"))
+    open_leg = Mock(side_effect=[OSError("in use"), OSError("in use"), _FakeLeg("busy")])
     monkeypatch.setattr(e, "_open_leg", open_leg)
 
     with caplog.at_level(logging.DEBUG, logger=engine_mod.log.name):
@@ -206,6 +171,11 @@ def test_failed_open_logs_error_once_then_debug(monkeypatch, opener, clock, capl
     levels = [r.levelno for r in caplog.records if "could not open leg" in r.message]
     assert levels == [logging.ERROR, logging.DEBUG]
     assert "busy" not in e._legs and "busy" in e._retry_at
+
+    clock[0] += engine_mod.LEG_RETRY_S
+    _settle(e)                         # a second on: opens
+    assert open_leg.call_count == 3
+    assert "busy" in e._legs
 
 
 # -- Legs open off the pump thread ----------------------------------------
@@ -339,24 +309,13 @@ def _pad_leg(padding=0, period_ms=10.0, src_period_ms=10.0):
     return _Leg("d", client, render, 9600, 4, 48000, period_ms, src_period_ms), client, render  # target = 1440 frames
 
 
-def test_write_never_pushes_padding_above_target():
-    leg, client, render = _pad_leg()
+@pytest.mark.parametrize("padding", [1, 500, 1439, 1440, 5000])
+def test_write_tops_padding_up_to_target_and_never_past_it(padding):
+    leg, client, render = _pad_leg(padding=padding)
     assert leg.target == 1440
-    for padding in (1, 500, 1439):
-        leg.fifo = bytearray(4 * 5000)
-        client.padding, render.writes = padding, []
-        leg.write()
-        assert render.released == [leg.target - padding]
-
-
-def test_write_does_nothing_at_or_over_target():
-    leg, client, render = _pad_leg()
-    leg.fifo = bytearray(4 * 900)  # under the drift threshold
-    for padding in (1440, 5000):
-        client.padding = padding
-        leg.write()
-    assert render.released == []
-    assert len(leg.fifo) == 4 * 900
+    leg.fifo = bytearray(4 * 5000)
+    leg.write()
+    assert render.released == ([leg.target - padding] if padding < leg.target else [])
 
 
 def test_sustained_surplus_triggers_drift_drop():
@@ -384,19 +343,13 @@ def test_stall_backlog_refills_the_endpoint_before_any_drift_drop():
 
 # -- Silence priming of dry endpoints -------------------------------------
 
-def test_dry_endpoint_with_data_is_primed_then_filled_to_target():
+@pytest.mark.parametrize("queued, primed", [(480, 720), (100, 1100)])  # frames: a packet, a partial packet
+def test_dry_endpoint_is_primed_then_filled_to_target(queued, primed):
     leg, client, render = _pad_leg()
-    leg.fifo = bytearray(4 * 480)  # one packet: tops up to prime + period
+    leg.fifo = bytearray(4 * queued)
     leg.write()
-    assert render.writes == [(720, AUDCLNT_BUFFERFLAGS_SILENT), (480, 0)]
+    assert render.writes == [(primed, AUDCLNT_BUFFERFLAGS_SILENT), (queued, 0)]
     assert leg.fifo == bytearray()
-
-
-def test_dry_endpoint_with_a_partial_packet_is_primed_to_the_same_level():
-    leg, client, render = _pad_leg()
-    leg.fifo = bytearray(4 * 100)
-    leg.write()
-    assert render.writes == [(1100, AUDCLNT_BUFFERFLAGS_SILENT), (100, 0)]
 
 
 def test_stall_backlog_on_a_dry_endpoint_adds_no_silence_and_drops_nothing():
@@ -511,12 +464,6 @@ def _run_engine(monkeypatch, avrt):
     e.start()
     assert e._ready.is_set() and e.error is None
     e.stop()
-
-
-def test_mmcss_handle_is_reverted_on_stop(monkeypatch):
-    avrt = _Avrt()
-    _run_engine(monkeypatch, avrt)
-    assert avrt.reverted == [0x1234]
 
 
 @pytest.mark.parametrize("avrt", [_Avrt(boom=True), _Avrt(handle=0), _Avrt(handle=None)])

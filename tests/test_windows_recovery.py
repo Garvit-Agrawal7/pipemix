@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from pipemix.config import ConfigManager
 from pipemix.windows.controller import Controller
 from conftest import win_backend as _backend, win_dev as _dev
@@ -55,11 +57,15 @@ def test_clean_stop_leaves_no_prev_default_for_next_startup(tmp_path: Path) -> N
     b = _backend()
     d1 = _dev("EP1")
     b.list_outputs.return_value = [d1]
+    b.get_default.return_value = "CABLE Input"          # the hub is already default
+    b.restore_target.return_value = "real_device"        # what should actually come back
     cfg = ConfigManager(tmp_path / "config.json")
     ctrl = _ctrl(tmp_path, backend=b, config=cfg)
 
     ctrl.start_sharing([d1])
-    assert cfg.data["prev_default"] == "prev_default"      # persisted before the switch
+    b.restore_target.assert_called_once_with([d1])
+    assert ctrl.prev_default == "real_device"
+    assert cfg.data["prev_default"] == "real_device"       # persisted before the switch
 
     ctrl.stop_sharing()
 
@@ -92,47 +98,22 @@ def test_start_sharing_persists_prev_default_before_changing_it(tmp_path: Path) 
     assert save_index < set_default_index
 
 
-# -- restore_target replaces get_default when recording what to restore --
-
-def test_start_sharing_records_restore_target_not_get_default(tmp_path: Path) -> None:
-    b = _backend()
-    d1 = _dev("EP1")
-    b.list_outputs.return_value = [d1]
-    b.get_default.return_value = "CABLE Input"          # the hub is already default
-    b.restore_target.return_value = "real_device"        # what should actually come back
-    ctrl = _ctrl(tmp_path, backend=b)
-
-    ctrl.start_sharing([d1])
-
-    b.restore_target.assert_called_once_with([d1])
-    assert ctrl.prev_default == "real_device"
-    assert ctrl.config.data["prev_default"] == "real_device"
-
-
 # -- Startup self-heal: no session, but the default is still our own hub --
 
-def test_startup_heals_a_stranded_hub_default_with_no_session(tmp_path: Path) -> None:
+@pytest.mark.parametrize("default, heals", [("CABLE Input", True), ("EP1", False)])
+def test_startup_heals_a_stranded_hub_default_with_no_session(tmp_path: Path, default: str, heals: bool) -> None:
     b = _backend()
     b.list_outputs.return_value = [_dev("EP1")]
-    b.get_default.return_value = "CABLE Input"
+    b.get_default.return_value = default
     b.restore_target.return_value = "EP1"
     ctrl = _ctrl(tmp_path, backend=b)
 
     ctrl.clean_orphans()
 
-    b.set_default.assert_called_once_with("EP1")
-
-
-def test_startup_heal_is_a_noop_when_default_already_matches(tmp_path: Path) -> None:
-    b = _backend()
-    b.list_outputs.return_value = [_dev("EP1")]
-    b.get_default.return_value = "EP1"
-    b.restore_target.return_value = "EP1"
-    ctrl = _ctrl(tmp_path, backend=b)
-
-    ctrl.clean_orphans()
-
-    b.set_default.assert_not_called()
+    if heals:
+        b.set_default.assert_called_once_with("EP1")
+    else:
+        b.set_default.assert_not_called()
 
 
 # -- Startup self-heal also un-pins apps a previous run left pinned --

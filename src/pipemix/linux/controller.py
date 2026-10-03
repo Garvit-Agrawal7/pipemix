@@ -209,7 +209,7 @@ class Controller(GObject.Object):
         self.backend.set_volume(sink, level)
 
     @locked  # so a routing change can't land between picking the sink and queueing
-    def set_device_volume(self, dev_id: str, volume: int, unmute: bool = False) -> None:
+    def set_device_volume(self, dev_id: str, volume: int) -> None:
         dev = self.devices.get(dev_id)
         if not dev:
             return
@@ -217,23 +217,23 @@ class Controller(GObject.Object):
         if self._solo() is dev:
             self.master_volume = volume
         if dev.connected and dev.sink:
-            self._send(dev.sink, volume, unmute)
+            self._send(dev.sink, volume, True)
 
     @locked
-    def set_master_volume(self, volume: int, unmute: bool = False) -> None:
+    def set_master_volume(self, volume: int) -> None:
         self.master_volume = volume
 
         solo = self._solo()
         if solo:
             # The hub is transparent for a lone output, so the level belongs on
             # the device — and its row has to move with the master row.
-            self.set_device_volume(solo.id, volume, unmute)
+            self.set_device_volume(solo.id, volume)
             self.emit("devices-changed", list(self.devices.values()))
             return
 
         target = self.active_sink() if self.session.is_active else self.prev_default
         if target:
-            self._send(target, volume, unmute)
+            self._send(target, volume, True)
         self._level_apps(volume)
 
     def _solo(self) -> AudioDevice | None:

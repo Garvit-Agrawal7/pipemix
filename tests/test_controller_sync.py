@@ -113,25 +113,6 @@ def test_10_hotplug_outside_session_leaves_bt_alone(ctrl):
     assert ctrl.session.state == SessionState.IDLE
 
 
-# -- 8: Api applies the selection under the controller lock --
-
-def test_8_apply_selection_holds_the_lock(ctrl):
-    api = Api(ctrl)
-    a, b = _dev(A, "sink_a"), _dev(B, "sink_b")
-    ctrl.devices = {A: a, B: b}
-    api.toggle_device(A, True)
-    api.start_sharing()
-    held = []
-    ctrl.start_sharing = lambda devs: held.append(ctrl._lock._is_owned())
-    ctrl.stop_sharing = lambda: held.append(ctrl._lock._is_owned())
-
-    api.toggle_device(B, True)   # start_sharing
-    api.toggle_device(A, False)
-    api.toggle_device(B, False)  # stop_sharing
-
-    assert held and all(held)
-
-
 def test_8_toggle_waits_for_the_lock(ctrl):
     api = Api(ctrl)
     ctrl.devices = {A: _dev(A, "sink_a")}

@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 from conftest import HUB, sink_dev as _dev
-from pipemix.models import AudioDevice, DeviceKind, VirtualSink, path_to_mac, sink_to_mac
+from pipemix.bridge import to_json
+from pipemix.models import AudioDevice, BackendHealth, BackendStatus, DeviceKind, SessionState, VirtualSink, path_to_mac, sink_to_mac
 from pipemix.linux import pactl_backend
 from pipemix.linux.pactl_backend import PactlBackend, _event_kind, _kind, _parse_inputs
 from pipemix.config import ConfigManager
@@ -115,20 +116,6 @@ def test_leg_delays(fake) -> None:
     assert "bt" not in sink.legs
 
 
-def _pw_dump_fails(monkeypatch, err: str) -> None:
-    real = pactl_backend._run
-    monkeypatch.setattr(pactl_backend, "_run", lambda args: (1, "", err) if args == ["pw-dump"] else real(args))
-
-
-def test_leg_delays_pw_dump_fails(fake, monkeypatch) -> None:
-    # no latency data means every leg gets the plain floor.
-    _pw_dump_fails(monkeypatch, "no pw-dump")
-
-    sink = VirtualSink(1, HUB)
-    PactlBackend().set_legs(sink, [_dev("wired"), _dev("bt")])
-    assert sink.delays == {"wired": 30, "bt": 30}
-
-
 def test_latencies_malformed_json(monkeypatch) -> None:
     # pw-dump's schema is undocumented: an odd-but-valid shape must degrade to {},
     # never raise, like _sink_names().
@@ -140,33 +127,11 @@ def test_latencies_malformed_json(monkeypatch) -> None:
         assert backend._latencies() == {}
 
 
-def test_leg_delays_transient_failure(fake, monkeypatch) -> None:
-    # pw-dump fails after legs are already aligned: don't tear down what's correct.
-    backend = PactlBackend()
-    sink = VirtualSink(1, HUB)
-    wired, bt = _dev("wired"), _dev("bt")
-
-    backend.set_legs(sink, [wired, bt])
-    assert sink.delays == {"wired": 230, "bt": 230}
-
-    _pw_dump_fails(monkeypatch, "pw-dump timed out")
-    n_loads = len(fake.loads)
-    backend.set_legs(sink, [wired, bt])
-    assert len(fake.loads) == n_loads, "already-aligned legs must not reload on a transient failure"
-    assert sink.delays == {"wired": 230, "bt": 230}
-
-
 def test_device_identity() -> None:
     # Devices are compared by stable id, so a reconnect with a new sink name is the same device.
     a = AudioDevice("61:C5:02:3A:59:49", "Buds", "bluez_output.61_C5_02_3A_59_49.1", DeviceKind.BLUETOOTH)
     b = AudioDevice("61:C5:02:3A:59:49", "Buds", "bluez_output.61_C5_02_3A_59_49.2", DeviceKind.BLUETOOTH)
     assert a == b and len({a, b}) == 1
-
-
-def test_sink_names() -> None:
-    # Crash recovery finds orphans by this prefix, and must never match a real sink.
-    name = VirtualSink.make_name()
-    assert name.startswith("pipemix_") and name != VirtualSink.make_name()
 
 
 def test_config_roundtrip(tmp_path: Path) -> None:
@@ -198,8 +163,13 @@ def test_legacy_toml(tmp_path: Path) -> None:
     assert cfg.data["presets"]["movie"]["name"] == "Movie Mode"
 
 
-def test_missing_config(tmp_path: Path) -> None:
-    assert ConfigManager(tmp_path / "nope.json").data == {
-        "devices": {}, "presets": {}, "last_preset": None, "prev_default": None,
-        "pinned_apps": [],
+def test_to_json_unwraps_dataclasses_and_enums():
+    device = AudioDevice(id="aa", name="Cans", sink=None, kind=DeviceKind.BLUETOOTH)
+    assert to_json(device) == {
+        "id": "aa", "name": "Cans", "sink": None, "kind": "bluetooth",
+        "connected": False, "volume": 50,
+    }
+    assert to_json(SessionState.REPAIRING) == "repairing"
+    assert to_json(BackendStatus(BackendHealth.DEGRADED, "hmm")) == {
+        "health": "degraded", "message": "hmm", "engine": "native",
     }

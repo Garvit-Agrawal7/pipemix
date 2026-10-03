@@ -211,7 +211,7 @@ class Controller(SignalEmitter):
             return self.devices[dev_id].volume
         return self.backend.get_volume(sink) if sink else 50
 
-    def set_device_volume(self, dev_id: str, volume: int, unmute: bool = False) -> None:
+    def set_device_volume(self, dev_id: str, volume: int) -> None:
         dev = self.devices.get(dev_id)
         if not dev:
             return
@@ -225,22 +225,21 @@ class Controller(SignalEmitter):
             except Exception as e:
                 log.error("Failed to set volume for %s: %s", dev_id, e)
 
-    def set_master_volume(self, volume: int, unmute: bool = False) -> None:
+    def set_master_volume(self, volume: int) -> None:
         self.master_volume = volume
 
         solo = self._solo()
         if solo:
             # The session is transparent for a lone output, so the level belongs on
             # the device — and its row has to move with the master row.
-            self.set_device_volume(solo.id, volume, unmute)
+            self.set_device_volume(solo.id, volume)
             self.emit("devices-changed", list(self.devices.values()))
             return
 
         target = self.active_sink() if self.session.is_active else self.prev_default
         if target:
             try:
-                if unmute:
-                    self.backend.set_mute(target, False)
+                self.backend.set_mute(target, False)
                 self.backend.set_volume(target, volume)
             except Exception as e:
                 log.error("Failed to set master volume on %s: %s", target, e)

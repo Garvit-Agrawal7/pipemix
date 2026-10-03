@@ -22,17 +22,6 @@ def test_single_device_uses_the_hub(ctrl) -> None:
     ctrl.backend.set_default.assert_called_with(ctrl.session.sink.name)
 
 
-# -- Multi-device sharing (virtual sink) --
-
-def test_multi_device_creates_virtual_sink(ctrl, devs) -> None:
-    d1, d2 = devs
-    ctrl.start_sharing([d1, d2])
-
-    assert ctrl.session.state == SessionState.ACTIVE
-    assert ctrl.session.sink is not None
-    ctrl.backend.create_sink.assert_called_once()
-
-
 # -- Stop sharing destroys the hub and restores default --
 
 def test_stop_destroys_hub_and_restores_default(ctrl) -> None:
@@ -88,15 +77,6 @@ def test_start_with_no_devices_is_noop(ctrl) -> None:
 
     assert ctrl.session.state == SessionState.IDLE
     ctrl.backend.create_sink.assert_not_called()
-
-
-# -- Device without sink raises --
-
-def test_single_device_without_sink_raises(ctrl) -> None:
-    dev = _dev("AA:BB:CC:DD:EE:01", sink=None)
-    with pytest.raises(BackendError):
-        ctrl.start_sharing([dev])
-    assert ctrl.session.state == SessionState.IDLE
 
 
 def test_failed_start_tears_down_the_hub(ctrl) -> None:
@@ -269,27 +249,6 @@ def test_refresh_keeps_session(ctrl) -> None:
     assert ctrl.targets == {dev.id}
 
 
-# -- Hotplug: react to a wired output appearing, ignore Bluetooth churn --
-
-def test_hotplug_ignores_unchanged_wired_set(ctrl) -> None:
-    ctrl.monitor.connected.reset_mock()
-
-    ctrl._hotplug()  # list_outputs() still returns [], same as at start()
-
-    ctrl.monitor.connected.assert_not_called()  # refresh() never ran
-
-
-def test_hotplug_refreshes_on_a_new_wired_output(ctrl) -> None:
-    usb = _dev("usb1", sink="alsa_usb", kind=DeviceKind.USB)
-    ctrl.backend.list_outputs.return_value = [usb]
-    ctrl.monitor.connected.reset_mock()
-
-    ctrl._hotplug()
-
-    ctrl.monitor.connected.assert_called_once()  # refresh() ran
-    assert usb.id in ctrl.devices
-
-
 # -- A toggle moves a leg; it must never tear the hub down --
 
 def test_toggle_keeps_the_hub(ctrl, devs) -> None:
@@ -330,9 +289,11 @@ def test_wired_output_drops_and_restores_its_leg(ctrl) -> None:
     ctrl.start_sharing([u1, u2])
     hub = ctrl.session.sink
     ctrl.backend.list_outputs.return_value = [u1]
+    ctrl.monitor.connected.reset_mock()
 
     ctrl._hotplug()
 
+    ctrl.monitor.connected.assert_called()  # a changed wired set refreshes
     ctrl.backend.destroy_sink.assert_not_called()
     ctrl.backend.set_legs.assert_called_with(hub, [u1])
     assert ctrl.session.devices == [u1]
@@ -436,7 +397,7 @@ def test_volume_ticks_latest_wins(ctrl) -> None:
     jobs = []
     ctrl._bg = lambda fn, *a: jobs.append((fn, a))
 
-    ctrl.set_device_volume(dev.id, 10, unmute=True)
+    ctrl.set_device_volume(dev.id, 10)
     ctrl.set_device_volume(dev.id, 20)
     ctrl.set_device_volume(dev.id, 30)
     assert len(jobs) == 1

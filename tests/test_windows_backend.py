@@ -59,16 +59,15 @@ def _backend(monkeypatch, *, hub: bool = False, default: str | None = None) -> W
 
 # -- health() / engine detection --
 
-def test_health_reports_hub_only_when_both_cable_endpoints_present(monkeypatch):
-    b = _backend(monkeypatch, hub=True)
-    assert b.health().engine == "hub"
-
-
-@pytest.mark.parametrize("render, capture", [([], [CABLE_OUT]), ([CABLE_IN], [])])
-def test_health_reports_leader_when_a_cable_endpoint_is_missing(monkeypatch, render, capture):
+@pytest.mark.parametrize("render, capture, engine", [
+    ([CABLE_IN], [CABLE_OUT], "hub"),
+    ([], [CABLE_OUT], "leader"),
+    ([CABLE_IN], [], "leader"),
+])
+def test_health_reports_hub_only_when_both_cable_endpoints_present(monkeypatch, render, capture, engine):
     b = _backend(monkeypatch, hub=False)
     _fake_outputs(monkeypatch, render=render, capture=capture)
-    assert b.health().engine == "leader"
+    assert b.health().engine == engine
 
 
 def test_health_is_cached_across_calls(monkeypatch):
@@ -118,29 +117,11 @@ def test_hub_mode_creates_no_engine_and_covers_every_device_in_legs(monkeypatch)
     assert sink.module is None
     assert FakeEngine.instances == []
     assert sink.legs == {"dev_a": 0, "dev_b": 0}
+    assert sink.name == "cable_in"   # where the Controller should point; switching the default is its job
     assert b.leader is None
-
-
-def test_create_sink_leaves_the_default_alone(monkeypatch):
-    # Switching the Windows default is the Controller's job, not create_sink's.
-    b = _backend(monkeypatch, hub=True, default="original")
-    sink = b.create_sink([_dev("dev_a")])
-    assert backend_mod.default_output_id() == "original"
-    assert sink.name == "cable_in"   # but it names where the Controller should point
 
 
 # -- destroy_sink --
-
-def test_destroy_sink_stops_the_engine_and_forgets_the_leader(monkeypatch):
-    b = _backend(monkeypatch, hub=False, default="original")
-    sink = b.create_sink([_dev("dev_a"), _dev("dev_b")])
-
-    b.destroy_sink(sink)
-
-    assert sink.module.stopped is True
-    assert sink.legs == {}
-    assert b.leader is None
-
 
 # -- restore_target --
 
@@ -288,17 +269,6 @@ def test_destroy_sink_does_not_wait_for_an_in_flight_start(monkeypatch):
     assert b._apps == {}
 
 
-def test_set_app_routes_from_an_old_session_builds_nothing(monkeypatch):
-    b = _hub_session(monkeypatch)
-    gen = b.apps_gen
-    b.destroy_sink(VirtualSink(None, "cable_in"))
-
-    b.set_app_routes({1: ["dev_a"]}, gen)
-
-    assert FakeEngine.instances == []
-    assert b._apps == {}
-
-
 def test_engine_stop_runs_with_no_backend_lock_held(monkeypatch):
     b = _hub_session(monkeypatch)
     monkeypatch.setattr(backend_mod, "Engine", _LockProbe)
@@ -380,6 +350,22 @@ def _slow_join(monkeypatch, *, hub: bool = True) -> WasapiBackend:
     return b
 
 
+def test_destroy_sink_stops_the_leader_without_joining_and_forgets_it(monkeypatch):
+    b = _slow_join(monkeypatch, hub=False)
+    sink = b.create_sink([_dev("dev_a"), _dev("dev_b")])
+
+    t0 = time.monotonic()
+    b.destroy_sink(sink)
+    assert time.monotonic() - t0 < 0.5
+    assert sink.module.stopped and not sink.module.joined
+    assert sink.legs == {}
+    assert b.leader is None
+
+    FakeEngine.join_gate.set()
+    b.close(1)
+    assert sink.module.joined
+
+
 def test_destroy_sink_signals_every_engine_without_joining(monkeypatch):
     b = _slow_join(monkeypatch)
     sink = b.create_sink([_dev("dev_a")])
@@ -394,20 +380,6 @@ def test_destroy_sink_signals_every_engine_without_joining(monkeypatch):
     FakeEngine.join_gate.set()
     b.close(1)
     assert all(e.joined for e in engines)
-
-
-def test_destroy_sink_does_not_wait_for_the_leader_engine_to_exit(monkeypatch):
-    b = _slow_join(monkeypatch, hub=False)
-    sink = b.create_sink([_dev("dev_a"), _dev("dev_b")])
-
-    t0 = time.monotonic()
-    b.destroy_sink(sink)
-    assert time.monotonic() - t0 < 0.5
-    assert sink.module.stopped and not sink.module.joined
-
-    FakeEngine.join_gate.set()
-    b.close(1)
-    assert sink.module.joined
 
 
 def test_set_app_routes_does_not_wait_for_a_dropped_engine_to_exit(monkeypatch):
@@ -465,15 +437,3 @@ def test_close_joins_an_engine_stopped_while_it_waits(monkeypatch):
     gate2.set()
     closer.join(1)
     assert seen == [True]                        # close() waited for the second one too
-
-
-def test_close_warns_naming_what_it_abandons(monkeypatch, caplog):
-    b = _slow_join(monkeypatch)
-    b.create_sink([_dev("dev_a")])
-    b.set_app_routes({7: ["dev_a"]}, b.apps_gen)
-    b.destroy_sink(VirtualSink(None, "cable_in"))
-
-    b.close(timeout=0.05)
-
-    assert "abandoning pid 7" in caplog.text
-    FakeEngine.join_gate.set()

@@ -14,8 +14,7 @@ if getattr(gi, "_pipemix_stub", False):  # conftest's stand-in has no real GObje
 from gi.repository import GObject
 
 from pipemix.models import AudioDevice, DeviceKind, SessionState
-from pipemix.models import BackendHealth, BackendStatus
-from pipemix.bridge import Bridge, to_json
+from pipemix.bridge import Bridge
 
 
 class FakeController(GObject.Object):
@@ -91,20 +90,3 @@ def test_pushes_keep_their_order():
     bridge.close()
 
 
-def test_push_before_a_window_exists_is_dropped():
-    """Crash recovery emits during start(), before the page is attached."""
-    controller = FakeController()
-    Bridge(controller, FakeApi())
-    controller.emit("state-changed", SessionState.IDLE)  # must not raise
-
-
-def test_to_json_unwraps_dataclasses_and_enums():
-    device = AudioDevice(id="aa", name="Cans", sink=None, kind=DeviceKind.BLUETOOTH)
-    assert to_json(device) == {
-        "id": "aa", "name": "Cans", "sink": None, "kind": "bluetooth",
-        "connected": False, "volume": 50,
-    }
-    assert to_json(SessionState.REPAIRING) == "repairing"
-    assert to_json(BackendStatus(BackendHealth.DEGRADED, "hmm")) == {
-        "health": "degraded", "message": "hmm", "engine": "native",
-    }

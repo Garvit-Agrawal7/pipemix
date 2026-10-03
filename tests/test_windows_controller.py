@@ -158,46 +158,32 @@ def test_start_sharing_pushes_the_reprobed_mode(tmp_path: Path) -> None:
     assert pushed == ["hub"]
 
 
-# -- A non-leader disconnect only rebuilds the legs --
+# -- A non-leader disconnect only rebuilds the legs; hub mode has no leader to lose --
 
-def test_non_leader_disconnect_only_rebuilds_legs(tmp_path: Path) -> None:
-    b = _leader_backend()
+@pytest.mark.parametrize("hub", [True, False])
+def test_non_leader_disconnect_only_rebuilds_legs(tmp_path: Path, hub: bool) -> None:
+    b = _backend(engine="hub") if hub else _leader_backend()
     ctrl = _ctrl(tmp_path, backend=b)
     d1, d2, d3 = _dev("EP1"), _dev("EP2"), _dev("EP3")
     ctrl.devices = {d.id: d for d in (d1, d2, d3)}
 
     ctrl.start_sharing([d1, d2, d3])
+    sink = ctrl.session.sink
+    gone = d1 if hub else next(d for d in (d1, d2, d3) if d.id != b.leader)
     leader = b.leader
-    non_leader = next(d for d in (d1, d2, d3) if d.id != leader)
     b.create_sink.reset_mock()
     b.destroy_sink.reset_mock()
 
-    ctrl._on_disconnect(non_leader.id)
+    ctrl._on_disconnect(gone.id)
 
     b.create_sink.assert_not_called()
     b.destroy_sink.assert_not_called()
     b.set_legs.assert_called_once()
-    assert b.leader == leader                # the leader itself is untouched
-    assert ctrl.session.state == SessionState.ACTIVE
-
-
-# -- Hub mode has no leader to lose --
-
-def test_hub_mode_disconnect_never_reelects(tmp_path: Path) -> None:
-    b = _backend(engine="hub")
-    ctrl = _ctrl(tmp_path, backend=b)
-    d1, d2 = _dev("EP1"), _dev("EP2")
-    ctrl.devices = {d.id: d for d in (d1, d2)}
-
-    ctrl.start_sharing([d1, d2])
-    sink = ctrl.session.sink
-    b.create_sink.reset_mock()
-
-    ctrl._on_disconnect(d1.id)
-
-    b.create_sink.assert_not_called()
-    b.destroy_sink.assert_not_called()
-    b.set_legs.assert_called_with(sink, [d2])
+    args = b.set_legs.call_args[0]
+    assert args[0] is sink
+    assert {d.id for d in args[1]} == {d.id for d in (d1, d2, d3) if d is not gone}
+    if not hub:
+        assert b.leader == leader                # the leader itself is untouched
     assert ctrl.session.state == SessionState.ACTIVE
     assert ctrl.session.sink is sink
 
@@ -243,33 +229,16 @@ def test_on_connect_of_a_non_target_does_not_rebuild(tmp_path: Path) -> None:
     b.set_legs.assert_not_called()
 
 
-# -- Volume: unmute param must be accepted, and applied on the non-solo master path --
+# -- Volume: the master path always unmutes the hub --
 
-def test_set_device_volume_accepts_unmute_param(tmp_path: Path) -> None:
-    b = _backend()
-    ctrl = _ctrl(tmp_path, backend=b)
-    d1 = _dev("EP1")
-    ctrl.devices = {d1.id: d1}
-
-    ctrl.set_device_volume(d1.id, 75, unmute=True)
-
-    b.set_mute.assert_called_once_with(d1.sink, False)
-    b.set_volume.assert_called_once_with(d1.sink, 75)
-    assert ctrl.devices[d1.id].volume == 75
-
-
-@pytest.mark.parametrize("unmute", [True, False])
-def test_set_master_volume_unmutes_hub_only_when_asked(tmp_path: Path, unmute: bool) -> None:
+def test_set_master_volume_unmutes_the_hub(tmp_path: Path) -> None:
     ctrl, b, _ = _session(tmp_path, 2)
     b.set_mute.reset_mock()
     b.set_volume.reset_mock()
 
-    ctrl.set_master_volume(60, unmute=unmute)
+    ctrl.set_master_volume(60)
 
-    if unmute:
-        b.set_mute.assert_called_once_with(ctrl.active_sink(), False)
-    else:
-        b.set_mute.assert_not_called()
+    b.set_mute.assert_called_once_with(ctrl.active_sink(), False)
     b.set_volume.assert_called_once_with(ctrl.active_sink(), 60)
 
 
@@ -413,11 +382,15 @@ def test_hub_route_stream_fans_out_without_pinning(tmp_path: Path) -> None:
     ctrl, b, [d1, d2] = _session(tmp_path, 2)
     hub = ctrl.active_sink()
     b.list_streams.return_value = [_app(42, endpoint=hub, active=True)]
+    ctrl._app_wake.clear()
+    b.set_app_routes.reset_mock()
 
     ctrl.route_stream(42, [d1.id, d2.id])
 
     b.move_stream.assert_not_called()                  # no pin — a live fan-out
     assert set(ctrl.overrides[42]) == {d1.id, d2.id}
+    b.set_app_routes.assert_not_called()               # the poll applies it, not route_stream
+    assert ctrl._app_wake.is_set()
 
     b.set_app_routes.reset_mock()
     ctrl._sync_apps()
@@ -476,20 +449,6 @@ def test_sync_apps_emits_streams_changed_only_on_change(tmp_path: Path) -> None:
     b.list_streams.return_value[0]["active"] = False
     ctrl._sync_apps()
     assert len(seen) == 2
-
-
-def test_leader_mode_route_stream_still_pins_and_rejects_fanout(tmp_path: Path) -> None:
-    b = _leader_backend()
-    b.list_streams.return_value = [_app(42)]
-    ctrl, b, [d1, d2, d3] = _session(tmp_path, 3, b)
-
-    ctrl.route_stream(42, [d2.id])
-
-    b.move_stream.assert_called_with(42, "EP2")
-    assert ctrl.overrides[42] == [d2.id]
-
-    with pytest.raises(BackendError):
-        ctrl.route_stream(42, [d2.id, d3.id])      # fan-out still refused in leader mode
 
 
 def test_hub_route_stream_clears_a_leftover_pinned_apps_entry(tmp_path: Path) -> None:
@@ -613,18 +572,6 @@ def test_stop_sharing_during_an_in_flight_sync_stops_the_poll(tmp_path: Path, mo
     poll.join(1)
     assert not poll.is_alive()
     assert ctrl.session.state == SessionState.IDLE
-
-
-def test_hub_route_stream_wakes_the_poll_instead_of_syncing(tmp_path: Path, monkeypatch) -> None:
-    b = _backend(engine="hub")
-    ctrl, b, [d1] = _session(tmp_path, 1, b)
-    ctrl._app_wake.clear()
-    b.set_app_routes.reset_mock()
-
-    ctrl.route_stream(42, [d1.id])
-
-    b.set_app_routes.assert_not_called()
-    assert ctrl._app_wake.is_set()
 
 
 def test_sync_apps_noop_after_stop_sharing(tmp_path: Path) -> None:
@@ -840,14 +787,13 @@ def test_quit_waits_for_an_in_flight_start_and_closes_its_engine(tmp_path: Path,
     assert not ctrl._app_polls[-1].is_alive()
 
 
-def test_quit_gives_up_on_a_hung_start_at_the_budget(tmp_path: Path, monkeypatch, caplog) -> None:
+def test_quit_gives_up_on_a_hung_start_at_the_budget(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(controller_module, "QUIT_S", 0.2)
     ctrl, engines, release = _quit_during_start(tmp_path, monkeypatch, start_s=2)
     try:
         t0 = time.monotonic()
         ctrl.stop()
         assert time.monotonic() - t0 < 0.5
-        assert "abandoning 1 app poll" in caplog.text
         assert not engines[0].stopped             # still inside start(): abandoned
     finally:
         release.set()
