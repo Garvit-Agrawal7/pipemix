@@ -1,13 +1,14 @@
 # PipeMix
 
-Play the same audio through several outputs at once on Linux and Windows: laptop speakers
-and a Bluetooth headset together, two Bluetooth speakers in different rooms.
+Play the same audio through as many speakers and headphones as you like, all at
+once, on Linux and Windows.
 
 <img width="880" height="660" alt="outputs" src="https://github.com/user-attachments/assets/b513daf2-a827-416c-a508-74c7d9da718b" />
 
-PipeWire can do this on its own, but only through config files and `pactl`
-incantations; Windows can't do it at all. PipeMix gives it a window: tick the outputs you want, drag a row
-to set its level, and save the combination as a preset.
+Neither Linux nor Windows lets you do this from its sound settings. PipeMix
+gives it a window: tick the outputs you want, drag a row to set its level, and
+save the combination as a preset. It builds on each system's own audio layer:
+PipeWire on Linux, WASAPI on Windows.
 
 ## What it does
 
@@ -26,85 +27,35 @@ to set its level, and save the combination as a preset.
 
 <img width="880" height="660" alt="apps" src="https://github.com/user-attachments/assets/1f1bbe2f-310d-40e7-81e7-7835064bfb8f" />
 
-## Requirements
-
-**Linux**
-
-- **PipeWire** with its PulseAudio compatibility layer (`pactl`)
-- **BlueZ**, for Bluetooth device and battery information
-- Python 3.12+, PyGObject, and pywebview
-
-Plain PulseAudio is not supported — PipeMix checks for PipeWire at startup and
-will tell you if it isn't there.
-
-**Windows**
-
-- Windows 10 or 11
-- [VB-CABLE](https://www.vb-cable.com/), bundled with the installer. Without
-  it PipeMix still works, but one of your chosen outputs has to act as the
-  source the others copy from.
-
 ## Install
 
-Download the `.deb` from the [latest release][releases] and install it:
+Download the latest build from the [releases page][releases].
+
+**Linux.** Needs PipeWire, which most current distros use by default. Plain
+PulseAudio isn't supported; PipeMix will tell you at startup if PipeWire isn't
+there.
 
 ```sh
-sudo dpkg -i pipemix.deb
-sudo apt-get install -f          # if any dependencies are missing
+sudo apt install ./pipemix-*-linux-x64.deb
 ```
 
 Then launch **PipeMix** from your applications menu, or run `pipemix`.
 
+**Windows 10 or 11.** Run `pipemix-*-windows-x64.exe`. On the last page, leave
+**Install VB virtual audio driver** ticked. That's
+[VB-CABLE](https://www.vb-cable.com/), VB-Audio's virtual audio driver, bundled
+with the installer; it needs administrator approval and may need a reboot. If
+you skip it, there's a Start Menu shortcut to install it later. PipeMix works
+without it, but per-app routing needs it. VB-CABLE is donationware, and all
+participations are welcome.
+
 [releases]: https://github.com/Garvit-Agrawal7/pipemix/releases
 
-### Building the package yourself
+## Technical Details
 
-```sh
-git clone https://github.com/Garvit-Agrawal7/pipemix.git
-cd pipemix
-npm --prefix frontend install && npm --prefix frontend run build
-python3 build_deb.py
-sudo dpkg -i build/pipemix.deb
-```
+### How it works
 
-The frontend has to be built first — `build_deb.py` refuses to package without
-it.
-
-### Windows installer
-
-On Windows, build the frontend first, install the Python dependencies and
-PyInstaller, install Inno Setup 6, and put `VBCABLE_Driver_Pack45.zip` in the
-repo root, then run `python build_win.py`. The installer lands as
-`pipemix-setup.exe`.
-
-The installer bundles [VB-CABLE](https://www.vb-cable.com/), VB-Audio's
-virtual audio driver. VB-CABLE is donationware, and all participations are
-welcome. Unless the driver is already installed, the finish page offers to
-install it, ticked by default, and there's a Start Menu shortcut to install it
-later. The driver needs administrator approval and may need a reboot.
-
-## Command line
-
-The GUI is the default, but everything is reachable from a terminal:
-
-```sh
-pipemix                 # launch the window
-pipemix --cli           # interactive text dashboard
-pipemix --list          # list detected outputs and their IDs
-pipemix --share IDS     # share to a comma-separated list of device IDs
-pipemix --debug         # verbose logging
-```
-
-From a source checkout, `python -m pipemix.main` takes the same flags on
-either platform.
-
-Presets and device names live in `~/.config/pipemix/config.json`
-(`%APPDATA%\PipeMix\config.json` on Windows). Logs go to
-`~/.local/share/pipemix/pipemix.log` (`%LOCALAPPDATA%\PipeMix\logs\pipemix.log`).
-
-## How it works
-
-### Linux
+#### Linux
 
 PipeMix creates one **hub sink** when a session starts and makes it the system
 default, then runs a **`module-loopback`** from that hub out to each chosen
@@ -130,7 +81,7 @@ Everything runs in one process:
 | `api.py`, `bridge.py` | The JS-callable surface, and Controller signals pushed to the page. |
 | `frontend/` | React + TypeScript, served to a pywebview window. |
 
-### Windows
+#### Windows
 
 Windows has no PipeWire, so PipeMix does the fan-out itself over WASAPI: one
 capture source feeds a shared-mode render stream per output, and Windows
@@ -144,39 +95,51 @@ a few frames when it falls too far behind rather than resampling.
 The code lives under `src/pipemix/windows/`; `api.py`, `bridge.py`,
 `config.py`, `models.py` and the frontend are shared with Linux.
 
-## Development
+### Building from source
+
+**Linux** needs PipeWire with its PulseAudio compatibility layer (`pactl`),
+BlueZ for Bluetooth device and battery information, Python 3.12+, PyGObject,
+pywebview, and npm for the frontend.
 
 ```sh
-python3 -m venv .venv --system-site-packages   # PyGObject comes from the system
-source .venv/bin/activate
-pip install -e .
-npm --prefix frontend install
-
-python3 -m pytest tests/ -q          # the suite runs headless, no PipeWire needed
-
-# Hot-reloading frontend against the real backend:
-npm --prefix frontend run dev        # in one terminal
-PIPEMIX_DEV=1 python3 -m pipemix.main
+git clone https://github.com/Garvit-Agrawal7/pipemix.git
+cd pipemix
+npm --prefix frontend install && npm --prefix frontend run build
+python3 build_deb.py
+sudo apt install ./build/pipemix.deb
 ```
 
-Two constraints worth knowing before you change anything:
+The frontend has to be built first — `build_deb.py` refuses to package without
+it.
 
-- pywebview's GTK backend pins **GTK 3 and WebKit2 4.1**. Nothing may
-  `gi.require_version('Gtk', '4.0')`.
-- `evaluate_js` blocks on a semaphore after queueing work on the GLib main
-  loop, so calling it *from* the main thread deadlocks the app permanently.
-  `Bridge` hands every push to a worker thread for exactly this reason, and
-  BlueZ handlers run on that main thread.
+**Windows:** build the frontend first, install the Python dependencies and
+PyInstaller, install Inno Setup 6, and put `VBCABLE_Driver_Pack45.zip` in the
+repo root, then run `python build_win.py`. The installer lands as
+`pipemix-setup.exe`.
 
-On Windows:
+### Command line
 
-```powershell
-python -m venv .venv
-.venv\Scripts\pip install -e .
-.venv\Scripts\python -m pytest tests/ -q             # WASAPI/COM are mocked
-$env:PIPEMIX_DEV="1"; .venv\Scripts\python -m pipemix.main
-.venv\Scripts\python -m pipemix.windows.wasapi.engine  # list endpoints, or run the engine alone with --to ID,ID
+The GUI is the default, but everything is reachable from a terminal:
+
+```sh
+pipemix                 # launch the window
+pipemix --cli           # interactive text dashboard
+pipemix --list          # list detected outputs and their IDs
+pipemix --share IDS     # share to a comma-separated list of device IDs
+pipemix --debug         # verbose logging
 ```
+
+From a source checkout, `python -m pipemix.main` takes the same flags on
+either platform.
+
+Presets and device names live in `~/.config/pipemix/config.json`
+(`%APPDATA%\PipeMix\config.json` on Windows). Logs go to
+`~/.local/share/pipemix/pipemix.log` (`%LOCALAPPDATA%\PipeMix\logs\pipemix.log`).
+
+## Contributing
+
+Bug reports and fixes are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers
+dev setup on both platforms, tests, and the things that will bite you.
 
 ## License
 

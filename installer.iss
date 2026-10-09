@@ -12,7 +12,7 @@
 #define MyAppName "PipeMix"
 #define MyAppPublisher "PipeMix"
 #define MyAppExeName "pipemix.exe"
-#define MyAppURL "https://github.com/gaurav-066/pipemix"
+#define MyAppURL "https://github.com/Garvit-Agrawal7/pipemix"
 
 [Setup]
 AppId={{61C3E08F-3B07-4405-AC3C-D740ABE137B0}

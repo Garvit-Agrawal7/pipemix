@@ -86,7 +86,7 @@ StartupNotify=true
     header = (
         "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n"
         "Upstream-Name: pipemix\n"
-        "Source: https://github.com/gaurav-066/pipemix\n"
+        "Source: https://github.com/Garvit-Agrawal7/pipemix\n"
         "\n"
         "Files: *\n"
         f"Copyright: 2026 {MAINTAINER}\n"

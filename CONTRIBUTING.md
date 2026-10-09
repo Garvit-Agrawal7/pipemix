@@ -18,7 +18,7 @@ PipeMix started, and whether it dropped out mid-session.
 ## Setting up
 
 ```sh
-git clone https://github.com/gaurav-066/pipemix.git
+git clone https://github.com/Garvit-Agrawal7/pipemix.git
 cd pipemix
 python3 -m venv .venv --system-site-packages   # PyGObject comes from the system
 source .venv/bin/activate
@@ -40,6 +40,16 @@ Build the `.deb`:
 ```sh
 npm --prefix frontend run build
 python3 build_deb.py                 # output in build/
+```
+
+On Windows:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\pip install -e .
+.venv\Scripts\python -m pytest tests/ -q             # WASAPI/COM are mocked
+$env:PIPEMIX_DEV="1"; .venv\Scripts\python -m pipemix.main
+.venv\Scripts\python -m pipemix.windows.wasapi.engine  # list endpoints, or run the engine alone with --to ID,ID
 ```
 
 ## Tests
