@@ -58,6 +58,7 @@ Maintainer: {MAINTAINER}
 Uploaders: {UPLOADERS}
 Depends: python3 (>= 3.12), python3-gi, python3-webview, gir1.2-gtk-3.0,
  gir1.2-webkit2-4.1, pipewire-pulse, pipewire-bin, pulseaudio-utils
+Recommends: gir1.2-ayatanaappindicator3-0.1
 Description: Route audio to several outputs at once
  PipeMix plays the same audio through any number of PipeWire sinks --
  Bluetooth, USB, HDMI or built-in -- with a volume fader for each one,
