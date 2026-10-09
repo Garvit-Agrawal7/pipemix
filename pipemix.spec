@@ -11,6 +11,7 @@ a = Analysis(
         (str(project_root / "frontend" / "dist"), "frontend/dist"),
         (str(icon_dir), "data/icons"),
     ],
+    hiddenimports=["pystray._win32"],  # pystray imports its backend by name
     excludes=["comtypes.gen"],
 )
 
