@@ -20,6 +20,8 @@ dependencies = [
     # there is no system package to get it from, and the GUI will not start
     # without it.
     "pywebview>=5.0; sys_platform == 'win32'",
+    "pystray; sys_platform == 'win32'",
+    "Pillow; sys_platform == 'win32'",
 ]
 
 [project.scripts]

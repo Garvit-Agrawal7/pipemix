@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 
+import pystray
 import webview
+from PIL import Image
 
 from pipemix.windows.backend import WasapiBackend
 from pipemix.windows.controller import Controller
@@ -73,11 +76,56 @@ def run_gui() -> int:
     )
     bridge.attach(window)
 
+    # Closing the window hides it to the tray; without an icon there would be
+    # no way back, so then it closes normally.
+    icon = _icon()
+    tray = None
+    if icon:
+        quitting = threading.Event()
+
+        def on_closing() -> bool:
+            # Runs on the UI thread (a should_lock event), where hide()'s
+            # Invoke executes inline; returning False cancels the close.
+            if quitting.is_set():
+                return True
+            window.hide()
+            return False
+
+        def quit_app() -> None:
+            quitting.set()
+            tray.stop()
+            window.destroy()
+
+        def on_form_closing(sender, args) -> None:
+            # pywebview's closing event has no close reason, so un-cancel the
+            # shutdown/sign-out close here (this runs after pywebview's handler).
+            from System.Windows.Forms import CloseReason
+            if args.CloseReason == CloseReason.WindowsShutDown:
+                quitting.set()
+                args.Cancel = False
+
+        window.events.closing += on_closing
+
+        def on_before_show() -> None:
+            window.native.FormClosing += on_form_closing
+
+        window.events.before_show += on_before_show
+        tray = pystray.Icon(
+            "PipeMix", Image.open(icon), "PipeMix",
+            pystray.Menu(
+                pystray.MenuItem("Show", lambda: (window.show(), window.restore()), default=True),
+                pystray.MenuItem("Quit", quit_app),
+            ),
+        )
+        tray.run_detached()
+
     # start() blocks on WASAPI enumeration and the notification client, and
     # its first devices-changed emit needs the bridge already attached.
     try:
-        webview.start(controller.start, debug=dev, icon=_icon())
+        webview.start(controller.start, debug=dev, icon=icon)
     finally:
+        if tray:
+            tray.stop()
         # Unwind routing before the process goes away.
         bridge.close()
         controller.stop()
