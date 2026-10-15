@@ -40,11 +40,15 @@ will tell you if it isn't there.
 Download the `.deb` from the [latest release][releases] and install it:
 
 ```sh
-sudo dpkg -i pipemix.deb
-sudo apt-get install -f          # if any dependencies are missing
+sudo apt install ./pipemix.deb
 ```
 
 Then launch **PipeMix** from your applications menu, or run `pipemix`.
+
+Closing the window keeps PipeMix running in the tray; quit from the tray menu
+or **Shut down**. The tray needs `gir1.2-ayatanaappindicator3-0.1` and a
+desktop that shows app indicators (stock GNOME needs the AppIndicator
+extension); without one, closing the window quits.
 
 [releases]: https://github.com/gaurav-066/pipemix/releases
 
@@ -55,7 +59,7 @@ git clone https://github.com/Garvit-Agrawal7/pipemix.git
 cd pipemix
 npm --prefix frontend install && npm --prefix frontend run build
 python3 build_deb.py
-sudo dpkg -i build/pipemix.deb
+sudo apt install ./build/pipemix.deb
 ```
 
 The frontend has to be built first — `build_deb.py` refuses to package without

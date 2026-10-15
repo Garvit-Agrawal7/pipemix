@@ -32,6 +32,8 @@ class Api:
         # surface and crashes on the unhashable SharingSession inside the Controller.
         self._controller = controller
         self._selected: dict[str, bool] = {}
+        # Set by shutdown, so the Linux tray lets the window close for real.
+        self._quitting = False
 
     # ---------- Selection ----------
 
@@ -194,5 +196,6 @@ class Api:
     @call
     def shutdown(self) -> None:
         import webview
+        self._quitting = True
         for window in webview.windows:
             window.destroy()

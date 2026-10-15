@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 from pathlib import Path
 
 import webview
+from gi.repository import Gio, GLib
 
 from pipemix.linux.controller import Controller
 from pipemix.linux.pactl_backend import PactlBackend
@@ -48,8 +48,10 @@ def _tray(window: webview.Window, quit_app):
     """
     try:
         import gi
+        # Runs before pywebview loads its backend, so pin GTK 3 here too.
+        gi.require_version("Gtk", "3.0")
         gi.require_version("AyatanaAppIndicator3", "0.1")
-        from gi.repository import AyatanaAppIndicator3 as AppIndicator, Gio, GLib, Gtk
+        from gi.repository import AyatanaAppIndicator3 as AppIndicator, Gtk
 
         bus = Gio.bus_get_sync(Gio.BusType.SESSION)
         has_host = bus.call_sync(
@@ -67,7 +69,7 @@ def _tray(window: webview.Window, quit_app):
         indicator.set_icon_full(str(png) if png.is_file() else "pipemix", "PipeMix")
         menu = Gtk.Menu()
         for label, action in (
-            ("Show", lambda _: (window.show(), window.restore())),
+            ("Show", lambda _: window.restore()),  # present() also unhides
             ("Quit", lambda _: quit_app()),
         ):
             item = Gtk.MenuItem(label=label)
@@ -82,7 +84,26 @@ def _tray(window: webview.Window, quit_app):
         return None
 
 
+def _claim() -> Gio.Application | None:
+    """Own PipeMix's D-Bus name, or None after asking whoever owns it to show
+    its window: a second instance's clean_orphans would unload its routing.
+
+    A D-Bus name, not a signal: WebKit's GC takes SIGUSR1 and crashes on it.
+    """
+    gapp = Gio.Application(application_id="io.github.Garvit_Agrawal7.PipeMix")
+    gapp.register(None)
+    if not gapp.get_is_remote():
+        return gapp
+    gapp.activate()  # becomes the owner's "activate" signal
+    gapp.get_dbus_connection().flush_sync(None)
+    return None
+
+
 def run_gui() -> int:
+    gapp = _claim()
+    if gapp is None:
+        log.info("PipeMix is already running; showing that window.")
+        return 0
     log.info("Starting PipeMix GUI...")
 
     controller = Controller(PactlBackend(), ConfigManager())
@@ -103,30 +124,24 @@ def run_gui() -> int:
 
     # Closing the window hides it to the tray; without a tray there would be
     # no way back, so then it closes normally.
-    quitting = threading.Event()
-    tray = None
+    tray = _tray(window, api.shutdown)
 
     def on_closing() -> bool:
-        # Runs on the GTK main thread (a should_lock event); hide() only
-        # queues an idle callback, so it can't deadlock. Returning False
-        # cancels the close.
-        if quitting.is_set() or tray is None:
+        # Runs on a worker thread while the GTK main thread waits for it, so
+        # only queue work here: hide() does, evaluate_js would deadlock.
+        # destroy() fires this too, hence the quitting check. False cancels.
+        if api._quitting or tray is None:
             return True
         window.hide()
         return False
 
-    def quit_app() -> None:
-        quitting.set()
-        window.destroy()
-
-    def on_before_show() -> None:
-        # Also a should_lock event, so this runs on the GTK main thread, where
-        # the indicator and its menu callbacks have to live.
-        nonlocal tray
-        tray = _tray(window, quit_app)
+    def on_activate(_) -> None:
+        # Main thread, where restore() would stall until the window is shown.
+        if window.events.shown.is_set():
+            window.restore()
 
     window.events.closing += on_closing
-    window.events.before_show += on_before_show
+    gapp.connect("activate", on_activate)
 
     # start() blocks on pactl and BlueZ, and its first devices-changed emit
     # needs the bridge already attached.
