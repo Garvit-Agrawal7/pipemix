@@ -58,11 +58,12 @@ $env:PIPEMIX_DEV="1"; .venv\Scripts\python -m pipemix.main
 python3 -m pytest tests/ -q
 ```
 
-The suite mocks `PactlBackend` and stubs `gi.repository`, so it runs headless
-with no PipeWire and no display. Keep it that way — a test that needs real
-audio hardware can't run on anyone else's machine. If you add a test file that
-imports `controller.py`, copy the GObject stubbing pattern from
-`tests/test_routing.py`.
+Shared tests sit in `tests/`; Linux-only ones in `tests/linux/` and
+Windows-only ones in `tests/windows/`. Only the host OS's folder is collected.
+The suite mocks `PactlBackend` and WASAPI/COM, and `tests/linux/conftest.py`
+stubs `gi.repository` when PyGObject is missing, so it runs headless with no
+PipeWire and no display. Keep it that way — a test that needs real audio
+hardware can't run on anyone else's machine.
 
 Anything touching routing, presets or the Bluetooth reconnect path should come
 with a test. UI-only changes usually don't need one.
