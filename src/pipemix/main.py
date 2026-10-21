@@ -6,6 +6,8 @@ import sys
 def main() -> None:
     if sys.platform == "win32":
         from pipemix.windows.main import main as _main
+    elif sys.platform == "darwin":
+        from pipemix.macos.main import main as _main
     else:
         from pipemix.linux.main import main as _main
     _main()

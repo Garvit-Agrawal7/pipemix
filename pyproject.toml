@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "pipemix"
 version = "0.3.0"
-description = "Route audio to multiple output devices simultaneously on Linux and Windows"
+description = "Route audio to multiple output devices simultaneously on Linux, Windows and macOS"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
@@ -16,10 +16,10 @@ license = { text = "GPL-3.0-or-later" }
 # does it without comtypes' GetModule, which would not survive PyInstaller.
 dependencies = [
     "pycaw>=20240210; sys_platform == 'win32'",
-    # Linux gets pywebview from the distro alongside PyGObject; on Windows
-    # there is no system package to get it from, and the GUI will not start
-    # without it.
-    "pywebview>=5.0; sys_platform == 'win32'",
+    # Linux gets pywebview from the distro alongside PyGObject; on Windows and
+    # macOS there is no system package to get it from, and the GUI will not
+    # start without it. macOS needs nothing else: Core Audio is reached via ctypes.
+    "pywebview>=5.0; sys_platform == 'win32' or sys_platform == 'darwin'",
     "pystray; sys_platform == 'win32'",
     "Pillow; sys_platform == 'win32'",
 ]

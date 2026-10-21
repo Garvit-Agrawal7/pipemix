@@ -29,7 +29,7 @@ export interface AudioDevice {
 export interface BackendStatus {
   health: BackendHealth;
   message: string;
-  // "native" | "hub" | "leader"; absent only in App.tsx's pre-snapshot placeholder.
+  // "native" | "hub" | "leader" | "taps" | "aggregate"; absent only in App.tsx's pre-snapshot placeholder.
   engine?: string;
 }
 
@@ -40,6 +40,7 @@ export interface Stream {
   mute: boolean;
   devices: string[] | null; // pinned device ids; null while following the session
   stuck: boolean; // playing somewhere other than where it was routed — the app has to reopen its audio
+  hint?: string | null; // why it is stuck, when the backend knows better (macOS)
 }
 
 export interface Preset {

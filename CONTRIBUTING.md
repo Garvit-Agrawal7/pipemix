@@ -52,6 +52,16 @@ $env:PIPEMIX_DEV="1"; .venv\Scripts\python -m pipemix.main
 .venv\Scripts\python -m pipemix.windows.wasapi.engine  # list endpoints, or run the engine alone with --to ID,ID
 ```
 
+On macOS (Python 3.12+ and the Xcode command-line tools):
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/python -m pytest tests/ -q                   # Core Audio is mocked
+PIPEMIX_DEV=1 .venv/bin/python -m pipemix.main
+.venv/bin/python -m pipemix.macos.coreaudio            # list outputs with their UIDs
+```
+
 ## Tests
 
 ```sh

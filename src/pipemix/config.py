@@ -16,6 +16,8 @@ def _default_path() -> Path:
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
         return Path(appdata) / "PipeMix" / "config.json"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "PipeMix" / "config.json"
     return Path.home() / ".config" / "pipemix" / "config.json"
 
 
@@ -23,6 +25,8 @@ def _default_log_dir() -> Path:
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
         return Path(local_appdata) / "PipeMix" / "logs"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Logs" / "PipeMix"
     return Path.home() / ".local" / "share" / "pipemix"
 
 
@@ -73,6 +77,7 @@ class ConfigManager:
             "last_preset": raw.get("last_preset"),
             "prev_default": raw.get("prev_default"),
             "pinned_apps": raw.get("pinned_apps", []),
+            "master": raw.get("master"),  # macOS remembers the master level
         }
 
     def save(self) -> None:

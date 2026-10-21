@@ -1,14 +1,14 @@
 # PipeMix
 
 Play the same audio through as many speakers and headphones as you like, all at
-once, on Linux and Windows.
+once, on Linux, Windows and macOS.
 
 <img width="880" height="660" alt="outputs" src="https://github.com/user-attachments/assets/b513daf2-a827-416c-a508-74c7d9da718b" />
 
-Neither Linux nor Windows lets you do this from its sound settings. PipeMix
-gives it a window: tick the outputs you want, drag a row to set its level, and
-save the combination as a preset. It builds on each system's own audio layer:
-PipeWire on Linux, WASAPI on Windows.
+None of them lets you do this from its sound settings. PipeMix gives it a
+window: tick the outputs you want, drag a row to set its level, and save the
+combination as a preset. It builds on each system's own audio layer: PipeWire
+on Linux, WASAPI on Windows, Core Audio on macOS.
 
 ## What it does
 
@@ -48,6 +48,11 @@ with the installer; it needs administrator approval and may need a reboot. If
 you skip it, there's a Start Menu shortcut to install it later. PipeMix works
 without it, but per-app routing needs it. VB-CABLE is donationware, and all
 participations are welcome.
+
+**macOS 12 or later** (per-app routing needs 14.2). Open the `.dmg` and drag
+**PipeMix** into Applications. It isn't notarized, so the first launch needs
+right-click → **Open**. No driver is needed. The first time you route or mute an
+app, macOS asks to allow **System Audio Recording** for PipeMix.
 
 [releases]: https://github.com/Garvit-Agrawal7/pipemix/releases
 
@@ -95,6 +100,24 @@ a few frames when it falls too far behind rather than resampling.
 The code lives under `src/pipemix/windows/`; `api.py`, `bridge.py`,
 `config.py`, `models.py` and the frontend are shared with Linux.
 
+#### macOS
+
+The hub is a **Multi-Output Device** (a stacked aggregate device) that PipeMix
+creates when a session starts and makes the default output. Toggling an output
+rewrites the live device's subdevice list, so the others keep playing. Core
+Audio drift-corrects each output against a clock device (wired hardware before
+Bluetooth) and aligns them by their reported latency: with the built-in speakers
+(34 ms) and AirPods Pro (171 ms), the hub reports 171 ms and the speakers wait
+for the AirPods. A Multi-Output Device has no volume of its own, so the master
+fader scales each output, and the volume keys move it while you share.
+
+Per-app routing uses **process taps**: a routed app is captured and muted at the
+source, then played on its outputs through a private aggregate device of its
+own. A small C callback (`macos/_tapcopy.c`) does the copy, since it runs on
+Core Audio's real-time thread.
+
+The code lives under `src/pipemix/macos/`, reaching Core Audio through `ctypes`.
+
 ### Building from source
 
 **Linux** needs PipeWire with its PulseAudio compatibility layer (`pactl`),
@@ -117,6 +140,10 @@ PyInstaller, install Inno Setup 6, and put `VBCABLE_Driver_Pack45.zip` in the
 repo root, then run `python build_win.py`. The installer lands as
 `pipemix-setup.exe`.
 
+**macOS:** build the frontend, install the Xcode command-line tools (for the
+per-app routing helper), then `pip install -e . pyinstaller` and run
+`python3 build_mac.py`. The app and `.dmg` land in `build/`.
+
 ### Command line
 
 The GUI is the default, but everything is reachable from a terminal:
@@ -129,12 +156,18 @@ pipemix --share IDS     # share to a comma-separated list of device IDs
 pipemix --debug         # verbose logging
 ```
 
+On macOS, `pipemix --apps` lists what is playing, and `--route APP=ID+ID`
+sends an app to some outputs of a `--share`. Inside the app bundle the command
+is `PipeMix.app/Contents/MacOS/PipeMix`.
+
 From a source checkout, `python -m pipemix.main` takes the same flags on
-either platform.
+every platform.
 
 Presets and device names live in `~/.config/pipemix/config.json`
-(`%APPDATA%\PipeMix\config.json` on Windows). Logs go to
-`~/.local/share/pipemix/pipemix.log` (`%LOCALAPPDATA%\PipeMix\logs\pipemix.log`).
+(`%APPDATA%\PipeMix\config.json` on Windows,
+`~/Library/Application Support/PipeMix/config.json` on macOS). Logs go to
+`~/.local/share/pipemix/pipemix.log` (`%LOCALAPPDATA%\PipeMix\logs\pipemix.log`,
+`~/Library/Logs/PipeMix/pipemix.log`).
 
 ## Contributing
 
